@@ -3,11 +3,9 @@ from flask import Flask
 from threading import Thread
 
 app = Flask('')
-
 @app.route('/')
 def home():
     return "Bot is alive!"
-
 def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
 
@@ -20,7 +18,8 @@ import pandas as pd
 import ta
 from telegram.ext import ApplicationBuilder, CommandHandler
 
-API_KEY = "c008ce51cd314c6590a91df41faa22c6"
+# --- GANTI SESUAI KEBUTUHAN ---
+API_KEY = "21a0860958e641cc934bec6277415088"
 BOT_TOKEN = "8114552558:AAFpnQEYHYa8P43g5rjOwPs5TSbjtYh9zS4"
 CHAT_ID = "-1002883903673"
 signals_buffer = []
@@ -29,7 +28,7 @@ def get_candles(symbol="XAU/USD", interval="5min", outputsize=100):
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&apikey={API_KEY}&outputsize={outputsize}"
     res = requests.get(url).json()
     if "values" not in res:
-        logging.error(f"Gagal ambil data {interval}: {res.get('message', '')}")
+        logging.error(f"Gagal ambil data: {res.get('message', '')}")
         return None
     return res["values"]
 
@@ -59,12 +58,14 @@ def confirm_trend_from_last_3(df):
 def generate_signal(df):
     df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
     df["ma"] = ta.trend.SMAIndicator(df["close"], window=50).sma_indicator()
+    df["ema"] = ta.trend.EMAIndicator(df["close"], window=20).ema_indicator()
     df["atr"] = ta.volatility.AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
 
     support, resistance = find_snr(df)
     last_close = df["close"].iloc[-1]
     rsi_now = df["rsi"].iloc[-1]
     ma = df["ma"].iloc[-1]
+    ema = df["ema"].iloc[-1]
     atr = df["atr"].iloc[-1]
 
     trend = confirm_trend_from_last_3(df)
@@ -74,10 +75,10 @@ def generate_signal(df):
     if atr < 0.2:
         return None
 
-    if trend == "BUY" and rsi_now < 70 and last_close > ma:
-        return "BUY", last_close, support, resistance, rsi_now, atr, ma
-    elif trend == "SELL" and rsi_now > 30 and last_close < ma:
-        return "SELL", last_close, support, resistance, rsi_now, atr, ma
+    if trend == "BUY" and last_close > ma and last_close > ema and rsi_now < 70:
+        return "BUY", last_close, support, resistance, rsi_now, atr, ma, ema
+    elif trend == "SELL" and last_close < ma and last_close < ema and rsi_now > 30:
+        return "SELL", last_close, support, resistance, rsi_now, atr, ma, ema
     return None
 
 async def send_signal(context):
@@ -89,13 +90,14 @@ async def send_signal(context):
             await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data XAU/USD")
             return
 
-        df = prepare_df(candles)[:-1]  # pastikan candle terakhir sudah close
+        df = prepare_df(candles)
+        df = df[:-1]  # ✅ Gunakan hanya candle yang sudah close
         result = generate_signal(df)
 
         wib_time = datetime.utcnow() + timedelta(hours=7)
 
         if result:
-            signal, entry, support, resis, rsi, atr, ma = result
+            signal, entry, support, resis, rsi, atr, ma, ema = result
             if signal == "BUY":
                 tp1 = round(entry + 0.30, 2)
                 tp2 = round(entry + 0.50, 2)
@@ -106,18 +108,20 @@ async def send_signal(context):
                 sl = round(entry + 0.30, 2)
 
             msg = (
-                f"Sinyal {signal} XAU/USD ⚡\n"
-                f"📈 Entry: {entry:.2f}\n🎯 TP1: {tp1} (+30 pips)\n🎯 TP2: {tp2} (+50 pips)\n"
+                f"📡 Sinyal {signal} XAU/USD ⚡\n"
+                f"📈 Entry: {entry:.2f}\n"
+                f"🎯 TP1: {tp1} (+30 pips)\n🎯 TP2: {tp2} (+50 pips)\n"
                 f"🛑 SL: {sl} (-30 pips)\n"
-                f"RSI: {rsi:.2f}, ATR: {atr:.2f}\nMA50: {ma:.2f}\n"
-                f"Support: {support:.2f}, Resistance: {resis:.2f}\n"
-                f"🕒 Time: {wib_time.strftime('%Y-%m-%d %H:%M:%S WIB')}"
+                f"📊 RSI: {rsi:.2f}, ATR: {atr:.2f}\n"
+                f"MA50: {ma:.2f}, EMA20: {ema:.2f}\n"
+                f"📉 Support: {support:.2f}, Resistance: {resis:.2f}\n"
+                f"🕒 {wib_time.strftime('%Y-%m-%d %H:%M:%S WIB')}"
             )
         else:
             msg = (
-                f"⚠️ Tidak ada sinyal valid, namun arah belum jelas.\n"
-                f"📊 Rekomendasi: Tunggu momentum.\n"
-                f"🕒 Time: {wib_time.strftime('%Y-%m-%d %H:%M:%S WIB')}"
+                f"⚠️ Tidak ada sinyal valid saat ini.\n"
+                f"📊 Market sideways atau sinyal belum jelas.\n"
+                f"🕒 {wib_time.strftime('%Y-%m-%d %H:%M:%S WIB')}"
             )
 
         signals_buffer.append(msg)
@@ -125,24 +129,28 @@ async def send_signal(context):
 
     except Exception as e:
         logging.error(f"Error analisa sinyal: {e}")
+        await application.bot.send_message(chat_id=CHAT_ID, text=f"⚠️ Terjadi error: {e}")
 
 async def daily_recap(context):
     global signals_buffer
     application = context.application
     if signals_buffer:
         recap = "\n\n".join(signals_buffer)
-        await application.bot.send_message(chat_id=CHAT_ID, text=f"📅 Rekapan Harian Sinyal XAU/USD:\n\n{recap}")
+        await application.bot.send_message(chat_id=CHAT_ID, text=f"📅 Rekapan Harian XAU/USD:\n\n{recap}")
         signals_buffer.clear()
 
 async def start(update, context):
-    await update.message.reply_text("✅ Bot sinyal scalping XAU/USD aktif (M5, sinyal tiap 20 menit)")
+    await update.message.reply_text("✅ Bot sinyal scalping XAU/USD aktif (TF M5, sinyal tiap 20 menit)")
 
 async def main():
     keep_alive()
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
 
-    application.job_queue.run_repeating(send_signal, interval=1200, first=1)  # 20 menit
+    # Jadwalkan analisa setiap 20 menit
+    application.job_queue.run_repeating(send_signal, interval=1200, first=1)
+
+    # Jadwalkan rekap harian jam 13:00 WIB
     application.job_queue.run_daily(daily_recap, time=time(hour=13, minute=0))
 
     print("Bot running...")

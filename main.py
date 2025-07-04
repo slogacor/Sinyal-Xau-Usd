@@ -77,20 +77,27 @@ async def analyze_and_send_signal(context):
             await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data XAU/USD")
             return
 
-        df = prepare_df(candles)[:-1]  # candle terakhir harus yang sudah close
-        df["rsi"] = ta.momentum.rsi(df["close"], window=14)
+        df = prepare_df(candles)[:-1]  # candle terakhir harus closed
+        df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
+        df["ma50"] = ta.trend.SMAIndicator(df["close"], window=50).sma_indicator()
+        df["atr"] = ta.volatility.AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
 
         support, resistance = find_snr(df)
         rsi_now = df["rsi"].iloc[-1]
         last_close = df["close"].iloc[-1]
+        ma50 = df["ma50"].iloc[-1]
+        atr_now = df["atr"].iloc[-1]
 
         bullish = is_bullish_engulfing(df) or is_hammer(df.iloc[-1])
         bearish = is_bearish_engulfing(df) or is_inverted_hammer(df.iloc[-1])
 
         signal = None
-        if rsi_now < 30 and last_close <= support and bullish:
+        if atr_now < 0.2:  # skip sinyal kalau volatilitas rendah
+            return
+
+        if rsi_now < 30 and last_close <= support and bullish and last_close > ma50:
             signal = "BUY"
-        elif rsi_now > 70 and last_close >= resistance and bearish:
+        elif rsi_now > 70 and last_close >= resistance and bearish and last_close < ma50:
             signal = "SELL"
 
         if not signal:
@@ -112,18 +119,13 @@ async def analyze_and_send_signal(context):
                        f"🎯 TP1: {tp1} (+30 pips)\n"
                        f"🎯 TP2: {tp2} (+50 pips)\n"
                        f"🛑 SL: {sl} (-30 pips)\n"
-                       f"RSI: {rsi_now:.2f}\n"
+                       f"RSI: {rsi_now:.2f}, ATR: {atr_now:.2f}\n"
                        f"Support: {support:.2f}, Resistance: {resistance:.2f}\n"
+                       f"MA50: {ma50:.2f}\n"
                        f"Time (WIB): {wib_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
         signals_buffer.append(signal_text)
-
-        if len(signals_buffer) >= 5:
-            recap = "\n\n".join(signals_buffer)
-            await application.bot.send_message(chat_id=CHAT_ID, text=f"📊 Rekapan 5 Sinyal Terbaru:\n\n{recap}")
-            signals_buffer.clear()
-        else:
-            await application.bot.send_message(chat_id=CHAT_ID, text=signal_text)
+        await application.bot.send_message(chat_id=CHAT_ID, text=signal_text)
 
     except Exception as e:
         logging.error(f"Error analisa sinyal: {e}")
@@ -141,10 +143,12 @@ async def start(update, context):
 
 async def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
-
     application.add_handler(CommandHandler("start", start))
-    # 🔁 Interval 25 menit, mulai pertama kali 10 detik setelah bot jalan
-    application.job_queue.run_repeating(analyze_and_send_signal, interval=25 * 60, first=10)
+
+    # Analisa tiap 10 detik untuk deteksi sinyal valid secepatnya
+    application.job_queue.run_repeating(analyze_and_send_signal, interval=10, first=1)
+
+    # Rekap harian pukul 13:00 WIB
     application.job_queue.run_daily(daily_recap, time=time(hour=13, minute=0))
 
     print("Bot running...")

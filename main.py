@@ -12,7 +12,7 @@ def keep_alive():
 # === BOT UTAMA ===
 import requests
 import logging
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, time, timezone
 import asyncio
 import pandas as pd
 import ta
@@ -51,9 +51,7 @@ def prepare_df(candles):
 
 def find_snr(df):
     recent = df.tail(30)
-    support = recent["low"].min()
-    resistance = recent["high"].max()
-    return support, resistance
+    return recent["low"].min(), recent["high"].max()
 
 def confirm_trend_from_last_3(df):
     candles = df.tail(4)
@@ -76,14 +74,22 @@ def generate_signal(df):
     atr = df["atr"].iloc[-1]
 
     trend = confirm_trend_from_last_3(df)
-    if not trend or atr < 0.2:
-        return None
+    if not trend:
+        return None, 0
 
+    score = 0
+    if atr > 0.2:
+        score += 1
     if trend == "BUY" and last_close > ma and last_close > ema and rsi_now < 70:
-        return "BUY", last_close, support, resistance, rsi_now, atr, ma, ema
+        score += 2
     elif trend == "SELL" and last_close < ma and last_close < ema and rsi_now > 30:
-        return "SELL", last_close, support, resistance, rsi_now, atr, ma, ema
-    return None
+        score += 2
+
+    if score >= 3:
+        return (trend, last_close, support, resistance, rsi_now, atr, ma, ema), score
+    elif score == 2:
+        return (trend, last_close, support, resistance, rsi_now, atr, ma, ema), score
+    return None, score
 
 async def send_signal(context):
     global signals_buffer
@@ -95,23 +101,25 @@ async def send_signal(context):
             return
 
         df = prepare_df(candles)
-        df = df[:-1]  # Gunakan hanya candle yang sudah selesai
-        result = generate_signal(df)
-        wib_time = datetime.utcnow() + timedelta(hours=7)
+        df = df[:-1]  # candle sudah close
+        result, score = generate_signal(df)
+        wib_time = datetime.now(timezone.utc) + timedelta(hours=7)
 
         if result:
             signal, entry, support, resis, rsi, atr, ma, ema = result
             if signal == "BUY":
-                tp1 = round(entry + 0.25, 2)
+                tp1 = round(entry + 0.30, 2)
                 tp2 = round(entry + 0.55, 2)
-                sl = round(entry - 0.20, 2)
+                sl = round(entry - 0.25, 2)
             else:
-                tp1 = round(entry - 0.25, 2)
+                tp1 = round(entry - 0.30, 2)
                 tp2 = round(entry - 0.55, 2)
-                sl = round(entry + 0.20, 2)
+                sl = round(entry + 0.25, 2)
 
+            strength = "VALID ✅" if score >= 3 else "MODERAT ⚠️"
             msg = (
                 f"🚨 Sinyal {signal} XAU/USD @ {wib_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"📊 Status: {strength}\n"
                 f"📈 Entry: {entry:.2f}\n"
                 f"🎯 TP1: {tp1} (+25-35 pips)\n🎯 TP2: {tp2} (+35-60 pips)\n"
                 f"🛑 SL: {sl} (-15-25 pips)\n"
@@ -121,7 +129,7 @@ async def send_signal(context):
             )
         else:
             msg = (
-                f"⚠️ Tidak ada sinyal valid (market sideways).\n"
+                f"⚠️ Sinyal GAGAL dikeluarkan, kondisi market tidak mendukung.\n"
                 f"🕒 {wib_time.strftime('%Y-%m-%d %H:%M:%S')}"
             )
 
@@ -145,14 +153,14 @@ async def daily_recap(context):
         signals_buffer.clear()
 
 async def start(update, context):
-    await update.message.reply_text("✅ Bot sinyal scalping XAU/USD aktif (analisa setiap 40 menit, sinyal wajib keluar tiap 45 menit)")
+    await update.message.reply_text("✅ Bot sinyal scalping XAU/USD aktif. Sinyal keluar tiap 45 menit.")
 
 async def main():
     keep_alive()
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
 
-    application.job_queue.run_repeating(send_signal, interval=2700, first=1)  # 45 menit sekali
+    application.job_queue.run_repeating(send_signal, interval=2700, first=1)  # setiap 45 menit
     application.job_queue.run_daily(daily_recap, time=time(hour=13, minute=0))
 
     print("Bot running...")

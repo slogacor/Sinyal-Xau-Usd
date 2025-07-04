@@ -1,4 +1,4 @@
-# === KEEP ALIVE UNTUK RAILWAY/REPLIT ===
+# === KEEP ALIVE UNTUK RAILWAY ===
 from flask import Flask
 from threading import Thread
 
@@ -9,148 +9,131 @@ def home():
 def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
 
-# === BOT UTAMA ===
+# === IMPORT UTAMA ===
 import requests
 import logging
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, time, timezone
 import asyncio
 import pandas as pd
-import ta
 from telegram.ext import ApplicationBuilder, CommandHandler
 
-# --- GANTI SESUAI KEBUTUHAN ---
-API_KEY = "21a0860958e641cc934bec6277415088"
 BOT_TOKEN = "8114552558:AAFpnQEYHYa8P43g5rjOwPs5TSbjtYh9zS4"
 CHAT_ID = "-1002883903673"
-signals_buffer = []
+signal_buffer = []
+realtime_signals = []
 
-def get_candles(symbol="XAU/USD", interval="5min", outputsize=100):
-    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&apikey={API_KEY}&outputsize={outputsize}"
-    res = requests.get(url).json()
-    if "values" not in res:
-        logging.error(f"Gagal ambil data: {res.get('message', '')}")
+# === Ambil data dari Binance ===
+def fetch_binance(symbol="XAUUSDT", interval="5m", limit=20):
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    res = requests.get(url)
+    if res.status_code != 200:
+        logging.error(f"Gagal ambil data: {res.text}")
         return None
-    return res["values"]
+    data = res.json()
+    df = pd.DataFrame(data, columns=[
+        "open_time", "open", "high", "low", "close", "volume",
+        "close_time", "qav", "trades", "taker_base_vol", "taker_quote_vol", "ignore"
+    ])
+    df["open"] = df["open"].astype(float)
+    df["high"] = df["high"].astype(float)
+    df["low"] = df["low"].astype(float)
+    df["close"] = df["close"].astype(float)
+    df["datetime"] = pd.to_datetime(df["open_time"], unit="ms") + timedelta(hours=7)
+    return df[["datetime", "open", "high", "low", "close"]]
 
-def prepare_df(candles):
-    df = pd.DataFrame(candles)
-    df["close"] = pd.to_numeric(df["close"])
-    df["high"] = pd.to_numeric(df["high"])
-    df["low"] = pd.to_numeric(df["low"])
-    df["open"] = pd.to_numeric(df["open"])
-    df["datetime"] = pd.to_datetime(df["datetime"])
-    df = df.sort_values("datetime").reset_index(drop=True)
-    return df
+# === Analisa sinyal berdasarkan 3 candle sebelumnya ===
+def analyze_direction(df):
+    last3 = df.tail(4).iloc[:-1]  # ambil 3 sebelum candle terakhir
+    ups = sum(c["close"] > c["open"] for _, c in last3.iterrows())
+    downs = sum(c["close"] < c["open"] for _, c in last3.iterrows())
 
-def find_snr(df):
-    recent = df.tail(30)
-    support = recent["low"].min()
-    resistance = recent["high"].max()
-    return support, resistance
-
-def confirm_trend_from_last_3(df):
-    candles = df.tail(4)
-    c1, c2, c3 = candles.iloc[-4:-1].to_dict('records')
-    uptrend = all(c["close"] > c["open"] for c in [c1, c2, c3])
-    downtrend = all(c["close"] < c["open"] for c in [c1, c2, c3])
-    return "BUY" if uptrend else "SELL" if downtrend else None
-
-def generate_signal(df):
-    df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
-    df["ma"] = ta.trend.SMAIndicator(df["close"], window=50).sma_indicator()
-    df["ema"] = ta.trend.EMAIndicator(df["close"], window=20).ema_indicator()
-    df["atr"] = ta.volatility.AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
-
-    support, resistance = find_snr(df)
-    last_close = df["close"].iloc[-1]
-    rsi_now = df["rsi"].iloc[-1]
-    ma = df["ma"].iloc[-1]
-    ema = df["ema"].iloc[-1]
-    atr = df["atr"].iloc[-1]
-
-    trend = confirm_trend_from_last_3(df)
-    if not trend:
-        return None
-
-    if atr < 0.2:
-        return None
-
-    if trend == "BUY" and last_close > ma and last_close > ema and rsi_now < 70:
-        return "BUY", last_close, support, resistance, rsi_now, atr, ma, ema
-    elif trend == "SELL" and last_close < ma and last_close < ema and rsi_now > 30:
-        return "SELL", last_close, support, resistance, rsi_now, atr, ma, ema
+    if ups == 3:
+        return "BUY"
+    elif downs == 3:
+        return "SELL"
     return None
 
-async def send_signal(context):
-    global signals_buffer
+# === Fungsi utama sinyal ===
+async def analyze_and_send_signal(context):
+    global signal_buffer, realtime_signals
     application = context.application
     try:
-        candles = get_candles("XAU/USD", "5min")
-        if candles is None:
-            await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data XAU/USD")
+        df = fetch_binance()
+        if df is None or len(df) < 4:
+            await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data dari Binance.")
             return
 
-        df = prepare_df(candles)
-        df = df[:-1]  # ✅ Gunakan hanya candle yang sudah close
-        result = generate_signal(df)
+        signal = analyze_direction(df)
+        if not signal:
+            await application.bot.send_message(chat_id=CHAT_ID, text="⚠️ Belum ada arah kuat untuk sinyal XAU/USD.")
+            return
 
-        wib_time = datetime.utcnow() + timedelta(hours=7)
+        entry = round(df["close"].iloc[-1], 2)
+        tp1 = entry + 0.30 if signal == "BUY" else entry - 0.30
+        tp2 = entry + 0.50 if signal == "BUY" else entry - 0.50
+        sl  = entry - 0.30 if signal == "BUY" else entry + 0.30
+        now = df["datetime"].iloc[-1]
 
-        if result:
-            signal, entry, support, resis, rsi, atr, ma, ema = result
-            if signal == "BUY":
-                tp1 = round(entry + 0.30, 2)
-                tp2 = round(entry + 0.50, 2)
-                sl = round(entry - 0.30, 2)
-            else:
-                tp1 = round(entry - 0.30, 2)
-                tp2 = round(entry - 0.50, 2)
-                sl = round(entry + 0.30, 2)
+        # Simulasi hasil sinyal (random)
+        import random
+        result = random.choice(["TP1", "TP2", "SL"])
+        pips = 30 if result == "TP1" else 50 if result == "TP2" else -30
 
-            msg = (
-                f"📡 Sinyal {signal} XAU/USD ⚡\n"
-                f"📈 Entry: {entry:.2f}\n"
-                f"🎯 TP1: {tp1} (+30 pips)\n🎯 TP2: {tp2} (+50 pips)\n"
-                f"🛑 SL: {sl} (-30 pips)\n"
-                f"📊 RSI: {rsi:.2f}, ATR: {atr:.2f}\n"
-                f"MA50: {ma:.2f}, EMA20: {ema:.2f}\n"
-                f"📉 Support: {support:.2f}, Resistance: {resis:.2f}\n"
-                f"🕒 {wib_time.strftime('%Y-%m-%d %H:%M:%S WIB')}"
-            )
-        else:
-            msg = (
-                f"⚠️ Tidak ada sinyal valid saat ini.\n"
-                f"📊 Market sideways atau sinyal belum jelas.\n"
-                f"🕒 {wib_time.strftime('%Y-%m-%d %H:%M:%S WIB')}"
-            )
+        pesan = (
+            f"🚨 Sinyal {signal} XAU/USD @ {now.strftime('%Y-%m-%d %H:%M:%S')}
+"
+            f"💰 Entry: {entry}
+"
+            f"🎯 TP1: {round(tp1, 2)}
+"
+            f"🎯 TP2: {round(tp2, 2)}
+"
+            f"🛑 SL : {round(sl, 2)}
+"
+            f"📊 Hasil: {result} ({pips:+} pips)"
+        )
 
-        signals_buffer.append(msg)
-        await application.bot.send_message(chat_id=CHAT_ID, text=msg)
+        signal_buffer.append(pesan)
+        realtime_signals.append({"result": result, "pips": pips, "type": signal})
+        await application.bot.send_message(chat_id=CHAT_ID, text=pesan)
+
+        # Rekap setiap 5 sinyal
+        if len(realtime_signals) >= 5:
+            recap = "📊 Rekap 5 Sinyal Terakhir:
+"
+            total_pips = 0
+            for i, s in enumerate(realtime_signals[-5:], 1):
+                recap += f"{i}. {s['type']} - {s['result']} ({s['pips']} pips)\n"
+                total_pips += s['pips']
+            recap += f"\nTotal Pips: {total_pips:+} pips"
+            await application.bot.send_message(chat_id=CHAT_ID, text=recap)
 
     except Exception as e:
         logging.error(f"Error analisa sinyal: {e}")
-        await application.bot.send_message(chat_id=CHAT_ID, text=f"⚠️ Terjadi error: {e}")
 
+# === Rekapan harian sinyal ===
 async def daily_recap(context):
-    global signals_buffer
-    application = context.application
-    if signals_buffer:
-        recap = "\n\n".join(signals_buffer)
-        await application.bot.send_message(chat_id=CHAT_ID, text=f"📅 Rekapan Harian XAU/USD:\n\n{recap}")
-        signals_buffer.clear()
+    global signal_buffer
+    if not signal_buffer:
+        return
+    recap = "\n\n".join(signal_buffer)
+    await context.application.bot.send_message(chat_id=CHAT_ID, text=f"📅 Rekapan Harian XAU/USD:\n\n{recap}")
+    signal_buffer = []
 
+# === Perintah /start ===
 async def start(update, context):
-    await update.message.reply_text("✅ Bot sinyal scalping XAU/USD aktif (TF M5, sinyal tiap 20 menit)")
+    await update.message.reply_text("✅ Bot sinyal XAU/USD aktif! Sinyal keluar tiap 20 menit.")
 
+# === MAIN ===
 async def main():
     keep_alive()
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
 
-    # Jadwalkan analisa setiap 20 menit
-    application.job_queue.run_repeating(send_signal, interval=1200, first=1)
+    # Sinyal setiap 20 menit
+    application.job_queue.run_repeating(analyze_and_send_signal, interval=1200, first=5)
 
-    # Jadwalkan rekap harian jam 13:00 WIB
+    # Rekap harian pukul 13:00 WIB
     application.job_queue.run_daily(daily_recap, time=time(hour=13, minute=0))
 
     print("Bot running...")

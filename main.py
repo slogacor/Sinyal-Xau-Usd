@@ -143,7 +143,8 @@ async def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
-    application.job_queue.run_repeating(analyze_and_send_signal, interval=45 * 60, first=10)
+    # 🔁 Interval 25 menit, mulai pertama kali 10 detik setelah bot jalan
+    application.job_queue.run_repeating(analyze_and_send_signal, interval=25 * 60, first=10)
     application.job_queue.run_daily(daily_recap, time=time(hour=13, minute=0))
 
     print("Bot running...")

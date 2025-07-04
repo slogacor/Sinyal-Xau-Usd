@@ -103,16 +103,15 @@ async def send_signal(context):
             signal, entry, support, resis, rsi, atr, ma, ema = result
             if signal == "BUY":
                 tp1 = round(entry + 0.25, 2)
-                tp2 = round(entry + 0.50, 2)
+                tp2 = round(entry + 0.55, 2)
                 sl = round(entry - 0.20, 2)
             else:
                 tp1 = round(entry - 0.25, 2)
-                tp2 = round(entry - 0.50, 2)
+                tp2 = round(entry - 0.55, 2)
                 sl = round(entry + 0.20, 2)
 
             msg = (
-                f"🚨 Sinyal {signal} XAU/USD @ {wib_time.strftime('%Y-%m-%d %H:%M:%S')}
-"
+                f"🚨 Sinyal {signal} XAU/USD @ {wib_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"📈 Entry: {entry:.2f}\n"
                 f"🎯 TP1: {tp1} (+25-35 pips)\n🎯 TP2: {tp2} (+35-60 pips)\n"
                 f"🛑 SL: {sl} (-15-25 pips)\n"
@@ -146,14 +145,14 @@ async def daily_recap(context):
         signals_buffer.clear()
 
 async def start(update, context):
-    await update.message.reply_text("✅ Bot sinyal scalping XAU/USD aktif (TF M5, sinyal wajib tiap 45 menit)")
+    await update.message.reply_text("✅ Bot sinyal scalping XAU/USD aktif (analisa setiap 40 menit, sinyal wajib keluar tiap 45 menit)")
 
 async def main():
     keep_alive()
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
 
-    application.job_queue.run_repeating(send_signal, interval=2700, first=1)  # setiap 45 menit
+    application.job_queue.run_repeating(send_signal, interval=2700, first=1)  # 45 menit sekali
     application.job_queue.run_daily(daily_recap, time=time(hour=13, minute=0))
 
     print("Bot running...")

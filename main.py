@@ -3,9 +3,11 @@ from flask import Flask
 from threading import Thread
 
 app = Flask('')
+
 @app.route('/')
 def home():
     return "Bot is alive!"
+
 def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
 
@@ -103,16 +105,20 @@ async def send_signal(context):
                 tp2 = round(entry - 0.50, 2)
                 sl = round(entry + 0.30, 2)
 
-            msg = (f"Sinyal {signal} XAU/USD ⚡
-"
-                   f"📈 Entry: {entry:.2f}\n🎯 TP1: {tp1} (+30 pips)\n🎯 TP2: {tp2} (+50 pips)\n"
-                   f"🛑 SL: {sl} (-30 pips)\n"
-                   f"RSI: {rsi:.2f}, ATR: {atr:.2f}\nMA50: {ma:.2f}\nSupport: {support:.2f}, Resistance: {resis:.2f}\n"
-                   f"🕒 Time: {wib_time.strftime('%Y-%m-%d %H:%M:%S WIB')}")
+            msg = (
+                f"Sinyal {signal} XAU/USD ⚡\n"
+                f"📈 Entry: {entry:.2f}\n🎯 TP1: {tp1} (+30 pips)\n🎯 TP2: {tp2} (+50 pips)\n"
+                f"🛑 SL: {sl} (-30 pips)\n"
+                f"RSI: {rsi:.2f}, ATR: {atr:.2f}\nMA50: {ma:.2f}\n"
+                f"Support: {support:.2f}, Resistance: {resis:.2f}\n"
+                f"🕒 Time: {wib_time.strftime('%Y-%m-%d %H:%M:%S WIB')}"
+            )
         else:
-            msg = (f"⚠️ Tidak ada sinyal valid, namun arah belum jelas.
-"
-                   f"📊 Rekomendasi: Tunggu momentum.\nTime: {wib_time.strftime('%Y-%m-%d %H:%M:%S WIB')}")
+            msg = (
+                f"⚠️ Tidak ada sinyal valid, namun arah belum jelas.\n"
+                f"📊 Rekomendasi: Tunggu momentum.\n"
+                f"🕒 Time: {wib_time.strftime('%Y-%m-%d %H:%M:%S WIB')}"
+            )
 
         signals_buffer.append(msg)
         await application.bot.send_message(chat_id=CHAT_ID, text=msg)

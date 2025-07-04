@@ -12,7 +12,7 @@ CHAT_ID = "-1002883903673"
 
 signals_buffer = []
 
-def get_candles(symbol="XAU/USD", interval="15min", outputsize=100):
+def get_candles(symbol="XAU/USD", interval="5min", outputsize=100):
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&apikey={API_KEY}&outputsize={outputsize}"
     res = requests.get(url).json()
     if "values" not in res:
@@ -58,75 +58,62 @@ def is_bearish_engulfing(df):
 
 def is_hammer(candle):
     body = abs(candle["close"] - candle["open"])
-    lower_shadow = (candle["open"] - candle["low"] if candle["close"] > candle["open"]
-                    else candle["close"] - candle["low"])
+    lower_shadow = min(candle["open"], candle["close"]) - candle["low"]
     candle_range = candle["high"] - candle["low"]
     return lower_shadow > 2 * body and body / candle_range < 0.3 if candle_range > 0 else False
 
 def is_inverted_hammer(candle):
     body = abs(candle["close"] - candle["open"])
-    upper_shadow = (candle["high"] - candle["close"] if candle["close"] > candle["open"]
-                    else candle["high"] - candle["open"])
+    upper_shadow = candle["high"] - max(candle["open"], candle["close"])
     candle_range = candle["high"] - candle["low"]
     return upper_shadow > 2 * body and body / candle_range < 0.3 if candle_range > 0 else False
-
-def calculate_tp_sl(df_m5, base_tp1=30, base_tp2=50, base_sl=20):
-    if len(df_m5) == 0:
-        return base_tp1, base_tp2, base_sl
-    last_candle = df_m5.iloc[-1]
-    range_pips = (last_candle["high"] - last_candle["low"]) * 100  # pip approx
-    multiplier = 1 if range_pips < 10 else 1.5
-    tp1 = base_tp1 * multiplier
-    tp2 = base_tp2 * multiplier
-    sl = base_sl * multiplier
-    return round(tp1), round(tp2), round(sl)
 
 async def analyze_and_send_signal(context):
     global signals_buffer
     application = context.application
     try:
-        candles_m15 = get_candles("XAU/USD", "15min")
-        candles_m5 = get_candles("XAU/USD", "5min")
-
-        if candles_m15 is None or candles_m5 is None:
+        candles = get_candles("XAU/USD", "5min")
+        if candles is None:
             await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data XAU/USD")
             return
 
-        df_m15 = prepare_df(candles_m15)[:-1]  # gunakan hanya candle yang sudah close
-        df_m5 = prepare_df(candles_m5)[:-1]    # candle M5 yang sudah close
+        df = prepare_df(candles)[:-1]  # candle terakhir harus yang sudah close
+        df["rsi"] = ta.momentum.rsi(df["close"], window=14)
 
-        df_m15["rsi"] = ta.momentum.rsi(df_m15["close"], window=14)
-        bb = ta.volatility.BollingerBands(df_m15["close"], window=20, window_dev=2)
-        df_m15["bb_high"] = bb.bollinger_hband()
-        df_m15["bb_low"] = bb.bollinger_lband()
+        support, resistance = find_snr(df)
+        rsi_now = df["rsi"].iloc[-1]
+        last_close = df["close"].iloc[-1]
 
-        support, resistance = find_snr(df_m15)
-
-        rsi_now = df_m15["rsi"].iloc[-1]
-        last_close = df_m15["close"].iloc[-1]
-
-        # Candlestick patterns
-        m15_bullish = is_bullish_engulfing(df_m15) or is_hammer(df_m15.iloc[-1])
-        m15_bearish = is_bearish_engulfing(df_m15) or is_inverted_hammer(df_m15.iloc[-1])
-
-        m5_bullish = is_bullish_engulfing(df_m5) or is_hammer(df_m5.iloc[-1])
-        m5_bearish = is_bearish_engulfing(df_m5) or is_inverted_hammer(df_m5.iloc[-1])
+        bullish = is_bullish_engulfing(df) or is_hammer(df.iloc[-1])
+        bearish = is_bearish_engulfing(df) or is_inverted_hammer(df.iloc[-1])
 
         signal = None
-        if rsi_now < 30 and last_close <= support and m15_bullish and m5_bullish:
+        if rsi_now < 30 and last_close <= support and bullish:
             signal = "BUY"
-        elif rsi_now > 70 and last_close >= resistance and m15_bearish and m5_bearish:
+        elif rsi_now > 70 and last_close >= resistance and bearish:
             signal = "SELL"
 
         if not signal:
             return
 
-        tp1, tp2, sl = calculate_tp_sl(df_m5)
+        entry_price = round(last_close, 2)
+        if signal == "BUY":
+            tp1 = round(entry_price + 0.30, 2)
+            tp2 = round(entry_price + 0.50, 2)
+            sl = round(entry_price - 0.30, 2)
+        else:
+            tp1 = round(entry_price - 0.30, 2)
+            tp2 = round(entry_price - 0.50, 2)
+            sl = round(entry_price + 0.30, 2)
 
         wib_time = datetime.utcnow() + timedelta(hours=7)
-        signal_text = (f"Sinyal {signal} XAU/USD 🟡\n"
-                       f"TP1: {tp1} pips\nTP2: {tp2} pips\nSL: {sl} pips\n"
+        signal_text = (f"Sinyal {signal} XAU/USD ⚡\n"
+                       f"📈 Entry: {entry_price}\n"
+                       f"🎯 TP1: {tp1} (+30 pips)\n"
+                       f"🎯 TP2: {tp2} (+50 pips)\n"
+                       f"🛑 SL: {sl} (-30 pips)\n"
                        f"RSI: {rsi_now:.2f}\n"
+                       f"Support: {support:.2f}, Resistance: {resistance:.2f}\n"
                        f"Time (WIB): {wib_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
         signals_buffer.append(signal_text)
@@ -150,17 +137,13 @@ async def daily_recap(context):
         signals_buffer.clear()
 
 async def start(update, context):
-    await update.message.reply_text("✅ Bot sinyal XAU/USD aktif!")
+    await update.message.reply_text("✅ Bot sinyal scalping XAU/USD aktif di M5!")
 
 async def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
-
-    # Setiap 45 menit (gunakan candle yang sudah selesai)
     application.job_queue.run_repeating(analyze_and_send_signal, interval=45 * 60, first=10)
-
-    # Recap harian jam 20:00 WIB (13:00 UTC)
     application.job_queue.run_daily(daily_recap, time=time(hour=13, minute=0))
 
     print("Bot running...")

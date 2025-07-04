@@ -57,10 +57,17 @@ def find_snr(df):
 
 def confirm_trend_from_last_3(df):
     candles = df.tail(4)
+    if len(candles) < 4:
+        return None
     c1, c2, c3 = candles.iloc[-4:-1].to_dict('records')
     uptrend = all(c["close"] > c["open"] for c in [c1, c2, c3])
     downtrend = all(c["close"] < c["open"] for c in [c1, c2, c3])
-    return "BUY" if uptrend else "SELL" if downtrend else None
+    if uptrend:
+        return "BUY"
+    elif downtrend:
+        return "SELL"
+    else:
+        return None
 
 def generate_signal(df):
     df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
@@ -76,8 +83,6 @@ def generate_signal(df):
     atr = df["atr"].iloc[-1]
 
     trend = confirm_trend_from_last_3(df)
-    if not trend:
-        return None, 0, support, resistance
 
     score = 0
     if atr > 0.2:
@@ -87,11 +92,8 @@ def generate_signal(df):
     elif trend == "SELL" and last_close < ma and last_close < ema and rsi_now > 30:
         score += 2
 
-    if score >= 3:
-        return (trend, last_close, support, resistance, rsi_now, atr, ma, ema), score, support, resistance
-    elif score == 2:
-        return (trend, last_close, support, resistance, rsi_now, atr, ma, ema), score, support, resistance
-    return None, score, support, resistance
+    # Note: kita tetap return trend walau score rendah, supaya sinyal tetap keluar
+    return (trend, last_close, support, resistance, rsi_now, atr, ma, ema), score
 
 async def send_signal(context):
     global signals_buffer
@@ -104,67 +106,68 @@ async def send_signal(context):
 
         df = prepare_df(candles)
         df = df[:-1]  # candle sudah close
-        result, score, support, resistance = generate_signal(df)
+        result, score = generate_signal(df)
         wib_time = datetime.now(timezone.utc) + timedelta(hours=7)
 
-        def pips(diff):
-            # 1 pip = 0.01 untuk XAU/USD, jadi pips = diff / 0.01
-            return round(diff / 0.01)
-
         if result:
-            signal, entry, sup, resis, rsi, atr, ma, ema = result
-
-            # TP dan SL berdasarkan perintah:
-            # TP1 minimal +30 pips (0.30), TP2 minimal +55 pips (0.55), SL sekitar 25 pips (0.25)
+            signal, entry, support, resis, rsi, atr, ma, ema = result
             if signal == "BUY":
-                tp1 = round(entry + 0.30, 2)
-                tp2 = round(entry + 0.55, 2)
-                sl = round(entry - 0.25, 2)
-                # Saran entry: entry price harus di bawah harga sinyal
-                entry_saran = f"Pastikan entry BUY di bawah harga sinyal ({entry:.2f})"
-            else:
+                tp1 = round(entry + 0.30, 2)  # 30 pips
+                tp2 = round(entry + 0.50, 2)  # 50 pips
+                sl = round(entry - 0.25, 2)   # 25 pips
+            elif signal == "SELL":
                 tp1 = round(entry - 0.30, 2)
-                tp2 = round(entry - 0.55, 2)
+                tp2 = round(entry - 0.50, 2)
                 sl = round(entry + 0.25, 2)
-                entry_saran = f"Pastikan entry SELL di atas harga sinyal ({entry:.2f})"
-
-            # Jarak support dan resistance ke entry, dalam pips
-            sup_pips = pips(abs(entry - support))
-            resis_pips = pips(abs(resistance - entry))
-
-            if score >= 3:
-                strength = "VALID ✅ (Golden Moment ✨)"
-            elif score == 2:
-                strength = "MODERAT ⚠️ (Sinyal sedang)"
             else:
-                strength = "LEMAH ❗ (Sinyal saat ini belum dapat dipastikan dengan akurat, harap berhati-hati saat entry)"
+                # Kalau trend tidak terdeteksi, keluarkan pesan khusus
+                msg = (
+                    f"⚠️ Sinyal GAGAL dikeluarkan, kondisi market tidak mendukung.\n"
+                    f"📅 Waktu: {wib_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"Support: {support:.2f}\nResistance: {resis:.2f}\n"
+                    f"💡 Harap evaluasi kondisi pasar dan gunakan manajemen risiko yang baik."
+                )
+                signals_buffer.append(msg)
+                await application.bot.send_message(chat_id=CHAT_ID, text=msg)
+                return
+
+            # Tentukan kategori akurasi sinyal
+            if score >= 3:
+                status = "Goldent Moment ✨"
+                tp_note = "TP diperlebar karena sinyal kuat"
+            elif score == 2:
+                status = "Sinyal Sedang ⚠️"
+                tp_note = "TP dan SL sedang"
+            else:
+                status = "⚠️ Sinyal Lemah"
+                tp_note = "TP dan SL disesuaikan, hati-hati entry"
+
+            # Saran entry untuk buy/sell
+            entry_saran = ("pastikan entry di bawah harga sinyal" if signal == "BUY" else "pastikan entry di atas harga sinyal")
 
             msg = (
                 f"🚨 Sinyal {signal} XAU/USD @ {wib_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"📊 Status: {strength}\n"
+                f"📊 Status: {status}\n"
                 f"📈 Entry: {entry:.2f}\n"
-                f"🎯 TP1: {tp1} (+30-45 pips)\n"
-                f"🎯 TP2: {tp2} (+55-60 pips)\n"
-                f"🛑 SL: {sl} (-15-25 pips)\n"
+                f"🎯 TP1: {tp1} (30-45 pips)\n🎯 TP2: {tp2} (40-60 pips)\n"
+                f"🛑 SL: {sl} (15-25 pips)\n"
+                f"Support: {support:.2f}, Resistance: {resis:.2f}\n"
                 f"📊 RSI: {rsi:.2f}, ATR: {atr:.2f}\n"
                 f"MA50: {ma:.2f}, EMA20: {ema:.2f}\n"
-                f"Support: {support:.2f} ({sup_pips} pips dari entry)\n"
-                f"Resistance: {resistance:.2f} ({resis_pips} pips dari entry)\n"
-                f"💡 {entry_saran}"
+                f"💡 {tp_note}\n"
+                f"💡 Saran entry: {entry_saran}"
             )
         else:
-            # Kalau tidak ada trend tapi tetap kirim sinyal lemah
-            strength = "LEMAH ❗ (Sinyal saat ini belum dapat dipastikan dengan akurat, harap berhati-hati saat entry)"
+            # Kondisi no result (tidak mungkin karena kita tetap return trend)
             msg = (
-                f"⚠️ Sinyal lemah, kondisi market tidak mendukung sinyal kuat.\n"
-                f"📅 Waktu: {wib_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"Support: {support:.2f}\nResistance: {resistance:.2f}\n"
-                f"💡 Harap evaluasi kondisi pasar dan gunakan manajemen risiko yang baik."
+                f"⚠️ Sinyal GAGAL dikeluarkan, kondisi market tidak mendukung.\n"
+                f"🕒 {wib_time.strftime('%Y-%m-%d %H:%M:%S')}"
             )
 
         signals_buffer.append(msg)
         await application.bot.send_message(chat_id=CHAT_ID, text=msg)
 
+        # Kirim rekap setiap 5 sinyal
         if len(signals_buffer) >= 5:
             recap = "📊 Rekap 5 sinyal terakhir:\n\n" + "\n\n".join(signals_buffer[-5:])
             await application.bot.send_message(chat_id=CHAT_ID, text=recap)
@@ -189,7 +192,10 @@ async def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
 
-    application.job_queue.run_repeating(send_signal, interval=2700, first=1)  # setiap 45 menit
+    # Job: kirim sinyal tiap 45 menit (2700 detik)
+    application.job_queue.run_repeating(send_signal, interval=2700, first=1)
+
+    # Job: rekap harian jam 13:00 WIB (GMT+7)
     application.job_queue.run_daily(daily_recap, time=time(hour=13, minute=0))
 
     print("Bot running...")

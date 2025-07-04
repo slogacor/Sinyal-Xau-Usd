@@ -51,7 +51,9 @@ def prepare_df(candles):
 
 def find_snr(df):
     recent = df.tail(30)
-    return recent["low"].min(), recent["high"].max()
+    support = recent["low"].min()
+    resistance = recent["high"].max()
+    return support, resistance
 
 def confirm_trend_from_last_3(df):
     candles = df.tail(4)
@@ -75,7 +77,7 @@ def generate_signal(df):
 
     trend = confirm_trend_from_last_3(df)
     if not trend:
-        return None, 0
+        return None, 0, support, resistance
 
     score = 0
     if atr > 0.2:
@@ -86,10 +88,10 @@ def generate_signal(df):
         score += 2
 
     if score >= 3:
-        return (trend, last_close, support, resistance, rsi_now, atr, ma, ema), score
+        return (trend, last_close, support, resistance, rsi_now, atr, ma, ema), score, support, resistance
     elif score == 2:
-        return (trend, last_close, support, resistance, rsi_now, atr, ma, ema), score
-    return None, score
+        return (trend, last_close, support, resistance, rsi_now, atr, ma, ema), score, support, resistance
+    return None, score, support, resistance
 
 async def send_signal(context):
     global signals_buffer
@@ -102,56 +104,62 @@ async def send_signal(context):
 
         df = prepare_df(candles)
         df = df[:-1]  # candle sudah close
-        result, score = generate_signal(df)
+        result, score, support, resistance = generate_signal(df)
         wib_time = datetime.now(timezone.utc) + timedelta(hours=7)
 
+        def pips(diff):
+            # 1 pip = 0.01 untuk XAU/USD, jadi pips = diff / 0.01
+            return round(diff / 0.01)
+
         if result:
-            signal, entry, support, resis, rsi, atr, ma, ema = result
-            # TP & SL minimal sesuai pips:
-            # 1 pip = 0.10 point
-            # TP1 = 30-45 pips → 3.0 - 4.5 points
-            # TP2 = 40-60 pips → 4.0 - 6.0 points
-            # SL = 15-25 pips → 1.5 - 2.5 points
+            signal, entry, sup, resis, rsi, atr, ma, ema = result
+
+            # TP dan SL berdasarkan perintah:
+            # TP1 minimal +30 pips (0.30), TP2 minimal +55 pips (0.55), SL sekitar 25 pips (0.25)
             if signal == "BUY":
-                tp1 = round(entry + 4.0, 2)   # 40 pips
-                tp2 = round(entry + 6.0, 2)   # 60 pips
-                sl = round(entry - 2.0, 2)    # 20 pips
-                saran_entry = f"💡 Saran Entry: Pastikan entry di bawah harga {entry:.2f}"
+                tp1 = round(entry + 0.30, 2)
+                tp2 = round(entry + 0.55, 2)
+                sl = round(entry - 0.25, 2)
+                # Saran entry: entry price harus di bawah harga sinyal
+                entry_saran = f"Pastikan entry BUY di bawah harga sinyal ({entry:.2f})"
             else:
-                tp1 = round(entry - 4.0, 2)
-                tp2 = round(entry - 6.0, 2)
-                sl = round(entry + 2.0, 2)
-                saran_entry = f"💡 Saran Entry: Pastikan entry di atas harga {entry:.2f}"
+                tp1 = round(entry - 0.30, 2)
+                tp2 = round(entry - 0.55, 2)
+                sl = round(entry + 0.25, 2)
+                entry_saran = f"Pastikan entry SELL di atas harga sinyal ({entry:.2f})"
 
-            # Hitung pips dari harga entry
-            pip_tp1 = abs(tp1 - entry) * 10
-            pip_tp2 = abs(tp2 - entry) * 10
-            pip_sl = abs(sl - entry) * 10
+            # Jarak support dan resistance ke entry, dalam pips
+            sup_pips = pips(abs(entry - support))
+            resis_pips = pips(abs(resistance - entry))
 
-            # Status akurasi
             if score >= 3:
-                strength = "Golden Moment ✅"
+                strength = "VALID ✅ (Golden Moment ✨)"
             elif score == 2:
-                strength = "Sinyal Sedang ⚠️"
+                strength = "MODERAT ⚠️ (Sinyal sedang)"
             else:
-                strength = "Sinyal Lemah ❗\nSinyal saat ini belum dapat dipastikan dengan akurat, harap berhati-hati saat entry."
+                strength = "LEMAH ❗ (Sinyal saat ini belum dapat dipastikan dengan akurat, harap berhati-hati saat entry)"
 
             msg = (
                 f"🚨 Sinyal {signal} XAU/USD @ {wib_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"📊 Status: {strength}\n"
                 f"📈 Entry: {entry:.2f}\n"
-                f"🎯 TP1: {tp1:.2f} (+{pip_tp1:.0f} pips)\n"
-                f"🎯 TP2: {tp2:.2f} (+{pip_tp2:.0f} pips)\n"
-                f"🛑 SL: {sl:.2f} (-{pip_sl:.0f} pips)\n\n"
+                f"🎯 TP1: {tp1} (+30-45 pips)\n"
+                f"🎯 TP2: {tp2} (+55-60 pips)\n"
+                f"🛑 SL: {sl} (-15-25 pips)\n"
                 f"📊 RSI: {rsi:.2f}, ATR: {atr:.2f}\n"
                 f"MA50: {ma:.2f}, EMA20: {ema:.2f}\n"
-                f"Support: {support:.2f}, Resistance: {resis:.2f}\n\n"
-                f"{saran_entry}"
+                f"Support: {support:.2f} ({sup_pips} pips dari entry)\n"
+                f"Resistance: {resistance:.2f} ({resis_pips} pips dari entry)\n"
+                f"💡 {entry_saran}"
             )
         else:
+            # Kalau tidak ada trend tapi tetap kirim sinyal lemah
+            strength = "LEMAH ❗ (Sinyal saat ini belum dapat dipastikan dengan akurat, harap berhati-hati saat entry)"
             msg = (
-                f"⚠️ Sinyal GAGAL dikeluarkan, kondisi market tidak mendukung.\n"
-                f"🕒 {wib_time.strftime('%Y-%m-%d %H:%M:%S')}"
+                f"⚠️ Sinyal lemah, kondisi market tidak mendukung sinyal kuat.\n"
+                f"📅 Waktu: {wib_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"Support: {support:.2f}\nResistance: {resistance:.2f}\n"
+                f"💡 Harap evaluasi kondisi pasar dan gunakan manajemen risiko yang baik."
             )
 
         signals_buffer.append(msg)

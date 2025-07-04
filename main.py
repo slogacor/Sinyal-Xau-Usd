@@ -107,25 +107,46 @@ async def send_signal(context):
 
         if result:
             signal, entry, support, resis, rsi, atr, ma, ema = result
+            # TP & SL minimal sesuai pips:
+            # 1 pip = 0.10 point
+            # TP1 = 30-45 pips → 3.0 - 4.5 points
+            # TP2 = 40-60 pips → 4.0 - 6.0 points
+            # SL = 15-25 pips → 1.5 - 2.5 points
             if signal == "BUY":
-                tp1 = round(entry + 0.30, 2)
-                tp2 = round(entry + 0.55, 2)
-                sl = round(entry - 0.25, 2)
+                tp1 = round(entry + 4.0, 2)   # 40 pips
+                tp2 = round(entry + 6.0, 2)   # 60 pips
+                sl = round(entry - 2.0, 2)    # 20 pips
+                saran_entry = f"💡 Saran Entry: Pastikan entry di bawah harga {entry:.2f}"
             else:
-                tp1 = round(entry - 0.30, 2)
-                tp2 = round(entry - 0.55, 2)
-                sl = round(entry + 0.25, 2)
+                tp1 = round(entry - 4.0, 2)
+                tp2 = round(entry - 6.0, 2)
+                sl = round(entry + 2.0, 2)
+                saran_entry = f"💡 Saran Entry: Pastikan entry di atas harga {entry:.2f}"
 
-            strength = "VALID ✅" if score >= 3 else "MODERAT ⚠️"
+            # Hitung pips dari harga entry
+            pip_tp1 = abs(tp1 - entry) * 10
+            pip_tp2 = abs(tp2 - entry) * 10
+            pip_sl = abs(sl - entry) * 10
+
+            # Status akurasi
+            if score >= 3:
+                strength = "Golden Moment ✅"
+            elif score == 2:
+                strength = "Sinyal Sedang ⚠️"
+            else:
+                strength = "Sinyal Lemah ❗\nSinyal saat ini belum dapat dipastikan dengan akurat, harap berhati-hati saat entry."
+
             msg = (
                 f"🚨 Sinyal {signal} XAU/USD @ {wib_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"📊 Status: {strength}\n"
                 f"📈 Entry: {entry:.2f}\n"
-                f"🎯 TP1: {tp1} (+25-35 pips)\n🎯 TP2: {tp2} (+35-60 pips)\n"
-                f"🛑 SL: {sl} (-15-25 pips)\n"
+                f"🎯 TP1: {tp1:.2f} (+{pip_tp1:.0f} pips)\n"
+                f"🎯 TP2: {tp2:.2f} (+{pip_tp2:.0f} pips)\n"
+                f"🛑 SL: {sl:.2f} (-{pip_sl:.0f} pips)\n\n"
                 f"📊 RSI: {rsi:.2f}, ATR: {atr:.2f}\n"
                 f"MA50: {ma:.2f}, EMA20: {ema:.2f}\n"
-                f"Support: {support:.2f}, Resistance: {resis:.2f}"
+                f"Support: {support:.2f}, Resistance: {resis:.2f}\n\n"
+                f"{saran_entry}"
             )
         else:
             msg = (

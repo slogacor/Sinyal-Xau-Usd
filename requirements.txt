@@ -1,3 +1,6 @@
-python-telegram-bot[job-queue]==20.3
-requests==2.31.0
-nest_asyncio==1.5.6
+python-telegram-bot[job-queue]
+requests
+pandas
+numpy
+ta
+nest-asyncio

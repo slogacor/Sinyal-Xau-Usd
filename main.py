@@ -3,6 +3,7 @@ from threading import Thread
 import requests
 import logging
 from datetime import datetime, timedelta, time, timezone
+import asyncio
 import pandas as pd
 import ta
 from telegram.ext import ApplicationBuilder, CommandHandler
@@ -21,7 +22,6 @@ CHAT_ID = "-1002883903673"
 API_KEY = "841e95162faf457e8d80207a75c3ca2c"
 signals_buffer = []
 
-# Fungsi ambil data
 def fetch_twelvedata(symbol="XAU/USD", interval="5min", outputsize=100):
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize={outputsize}&apikey={API_KEY}"
     try:
@@ -79,12 +79,8 @@ def generate_signal(df):
     atr = df["atr"].iloc[-1]
 
     trend = confirm_trend_from_last_3(df)
-    if not trend and atr > 0.2:
-        trend = "BUY" if last_close > ma else "SELL"  # fallback trend
 
-    if not trend:
-        return None, 0, support, resistance
-
+    # Selalu keluarkan sinyal walaupun trend None, pakai logika lemah kalau tidak ada trend
     score = 0
     if atr > 0.2:
         score += 1
@@ -93,10 +89,21 @@ def generate_signal(df):
     elif trend == "SELL" and last_close < ma and last_close < ema and rsi_now > 30:
         score += 2
 
-    return (trend, last_close, rsi_now, atr, ma, ema), score, support, resistance
+    # Jika tidak ada trend tapi ada atr > 0.2, tetap keluarkan sinyal lemah
+    if trend is None and score >= 1:
+        signal = "LEMAH"
+        return (signal, last_close, rsi_now, atr, ma, ema), score, support, resistance
+    elif trend and score >= 1:
+        return (trend, last_close, rsi_now, atr, ma, ema), score, support, resistance
+    else:
+        return None, score, support, resistance
 
 def calculate_tp_sl(signal, entry, score):
-    if score >= 3:
+    if signal == "LEMAH":
+        tp1_pips = 15
+        tp2_pips = 25
+        sl_pips = 15
+    elif score >= 3:
         tp1_pips = 30
         tp2_pips = 55
         sl_pips = 20
@@ -109,9 +116,18 @@ def calculate_tp_sl(signal, entry, score):
         tp2_pips = 25
         sl_pips = 15
 
-    tp1 = entry + tp1_pips * 0.1 if signal == "BUY" else entry - tp1_pips * 0.1
-    tp2 = entry + tp2_pips * 0.1 if signal == "BUY" else entry - tp2_pips * 0.1
-    sl = entry - sl_pips * 0.1 if signal == "BUY" else entry + sl_pips * 0.1
+    if signal == "BUY":
+        tp1 = entry + tp1_pips * 0.1
+        tp2 = entry + tp2_pips * 0.1
+        sl = entry - sl_pips * 0.1
+    elif signal == "SELL":
+        tp1 = entry - tp1_pips * 0.1
+        tp2 = entry - tp2_pips * 0.1
+        sl = entry + sl_pips * 0.1
+    else:  # LEMAH atau lainnya
+        tp1 = entry + tp1_pips * 0.1
+        tp2 = entry + tp2_pips * 0.1
+        sl = entry - sl_pips * 0.1
 
     return tp1, tp2, sl, tp1_pips, tp2_pips, sl_pips
 
@@ -122,7 +138,9 @@ def adjust_entry(signal, entry, last_close):
         entry = last_close + 0.01
     return round(entry, 2)
 
-def format_status(score):
+def format_status(score, signal):
+    if signal == "LEMAH":
+        return "LEMAH ⚠️ Harap berhati-hati saat entry dan gunakan manajemen risiko"
     if score >= 3:
         return "GOLDEN MOMENT 🌟"
     elif score == 2:
@@ -161,10 +179,10 @@ async def send_signal(context):
             entry = adjust_entry(signal, entry, df["close"].iloc[-1])
             tp1, tp2, sl, tp1_pips, tp2_pips, sl_pips = calculate_tp_sl(signal, entry, score)
 
-            status_text = format_status(score)
-            entry_note = "Entry di bawah harga sinyal" if signal == "BUY" else "Entry di atas harga sinyal"
+            status_text = format_status(score, signal)
+            entry_note = "Entry di bawah harga sinyal" if signal == "BUY" else ("Entry di atas harga sinyal" if signal == "SELL" else "Entry sesuai harga sinyal")
             msg = (
-                f"🚨 Sinyal {signal} {'⬆️' if signal=='BUY' else '⬇️'} XAU/USD @ {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"🚨 Sinyal {signal} {'⬆️' if signal=='BUY' else ('⬇️' if signal=='SELL' else '⚠️')} XAU/USD @ {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"📊 Status: {status_text}\n"
                 f"📈 Entry: {entry:.2f} ({entry_note})\n"
                 f"🎯 TP1: {tp1:.2f} (+{tp1_pips} pips)\n"
@@ -176,11 +194,11 @@ async def send_signal(context):
             )
         else:
             msg = (
-                f"⚠️ Tidak ada trend yang jelas, namun tetap waspadai pergerakan harga.\n"
+                f"⚠️ Sinyal LEMAH, kondisi market tidak mendukung sinyal kuat.\n"
                 f"📅 Waktu: {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"Support: {support:.2f}\n"
                 f"Resistance: {resistance:.2f}\n"
-                f"💡 Manajemen risiko sangat penting."
+                f"💡 Harap evaluasi kondisi pasar dan gunakan manajemen risiko yang baik."
             )
 
         signals_buffer.append(msg)
@@ -202,27 +220,40 @@ async def daily_recap(context):
         await application.bot.send_message(chat_id=CHAT_ID, text=f"📅 Rekapan Harian XAU/USD:\n\n{recap}")
         signals_buffer.clear()
 
+async def weekend_check_and_notify(context):
+    now = datetime.now(timezone.utc) + timedelta(hours=7)
+    if is_weekend(now):
+        msg = f"📢 Market tutup hari ini ({now.strftime('%A')}).\nSebaiknya istirahat dan siapkan strategi untuk pekan depan."
+        await context.bot.send_message(chat_id=CHAT_ID, text=msg)
+
 async def start(update, context):
     await update.message.reply_text("✅ Bot sinyal scalping XAU/USD aktif. Sinyal keluar tiap 45 menit.")
 
 async def weekend_message(update, context):
     now = datetime.now(timezone.utc) + timedelta(hours=7)
     if is_weekend(now):
-        await update.message.reply_text("⚠️ Market tutup hari Sabtu dan Minggu.")
+        await update.message.reply_text("⚠️ Market tutup hari Sabtu dan Minggu, sebaiknya istirahat dan siapkan strategi pekan depan.")
     else:
-        await update.message.reply_text("✅ Market sedang buka. Sinyal akan dikirim setiap 45 menit.")
+        await update.message.reply_text("Market buka dan siap memberikan sinyal setiap 45 menit.")
 
-# ✅ MAIN FUNCTION TANPA ERROR
-def main():
+async def main():
     keep_alive()
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("market", weekend_message))
 
+    # Kirim sinyal tiap 45 menit
     application.job_queue.run_repeating(send_signal, interval=2700, first=10)
+
+    # Kirim rekap harian jam 23:50 WIB
     application.job_queue.run_daily(daily_recap, time=time(hour=23, minute=50))
 
-    application.run_polling()
+    # Kirim pesan weekend tiap hari Sabtu dan Minggu jam 09:00 WIB
+    application.job_queue.run_daily(weekend_check_and_notify, time=time(hour=9, minute=0))
+
+    await application.start()
+    await application.idle()
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())

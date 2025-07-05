@@ -81,7 +81,6 @@ def generate_signal(df):
 
     trend = confirm_trend_from_last_3(df)
     if not trend:
-        # Jika tidak ada tren, tetap berikan sinyal LEMAH berdasarkan ATR > 0.2
         if atr > 0.2:
             return ("LEMAH", last_close, rsi_now, atr, ma, ema), 1, support, resistance
         else:
@@ -138,21 +137,39 @@ def format_status(score):
         return "LEMAH ⚠️ Harap berhati-hati saat entry dan gunakan manajemen risiko"
 
 def is_weekend(now):
-    return now.weekday() in [5,6]
+    # Sabtu dan Minggu adalah weekend
+    return now.weekday() in [5, 6]
 
 async def send_signal(context):
     global signals_buffer
     application = context.application
     now = datetime.now(timezone.utc) + timedelta(hours=7)
 
-    if is_weekend(now):
+    # Logika stop sinyal jika sudah lewat Jumat 22:00 WIB sampai Senin 08:00 WIB
+    # Jika saat ini hari Jumat dan jam >= 22:00
+    if now.weekday() == 4 and now.time() >= time(22, 0):
+        msg = (
+            f"📢 Ini adalah sinyal terakhir hari Jumat sebelum weekend.\n"
+            f"Market akan tutup setelah ini sampai Senin jam 08:00 WIB."
+        )
+        # Kirim sinyal terakhir sebelum weekend
+    elif now.weekday() in [5, 6]:  # Sabtu & Minggu
         msg = (
             f"📢 Market tutup hari ini ({now.strftime('%A')}).\n"
             "Sebaiknya istirahat dan siapkan strategi untuk pekan depan."
         )
         await application.bot.send_message(chat_id=CHAT_ID, text=msg)
         return
+    elif now.weekday() == 0 and now.time() < time(8, 0):
+        # Hari Senin sebelum jam 08:00, jangan kirim sinyal
+        msg = (
+            f"📢 Market masih tutup sampai jam 08:00 WIB.\n"
+            f"Harap tunggu dan siapkan strategi."
+        )
+        await application.bot.send_message(chat_id=CHAT_ID, text=msg)
+        return
 
+    # Jika bukan waktu weekend, lakukan analisa dan kirim sinyal
     try:
         candles = fetch_twelvedata("XAU/USD", "5min", 100)
         if candles is None:
@@ -173,69 +190,34 @@ async def send_signal(context):
             msg = (
                 f"🚨 Sinyal {signal if signal != 'LEMAH' else 'LEMAH'} {'⬆️' if signal=='BUY' else '⬇️' if signal=='SELL' else ''} XAU/USD @ {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"📊 Status: {status_text}\n"
-                f"📈 Entry: {entry:.2f} ({entry_note})\n"
-                f"🎯 TP1: {tp1:.2f} (+{tp1_pips} pips)\n"
-                f"🎯 TP2: {tp2:.2f} (+{tp2_pips} pips)\n"
+                f"⏳ RSI: {rsi:.2f}, ATR: {atr:.2f}\n"
+                f"⚖️ Support: {support:.2f}, Resistance: {resistance:.2f}\n"
+                f"💰 Entry: {entry:.2f} ({entry_note})\n"
+                f"🎯 TP1: {tp1:.2f} (+{tp1_pips} pips), TP2: {tp2:.2f} (+{tp2_pips} pips)\n"
                 f"🛑 SL: {sl:.2f} (-{sl_pips} pips)\n"
-                f"📊 RSI: {rsi:.2f}, ATR: {atr:.2f}\n"
-                f"MA50: {ma:.2f}, EMA20: {ema:.2f}\n"
-                f"Support: {support:.2f}, Resistance: {resistance:.2f}"
             )
+            await application.bot.send_message(chat_id=CHAT_ID, text=msg)
+            signals_buffer.append(signal)
+
         else:
-            msg = (
-                f"⚠️ Tidak ada sinyal kuat atau lemah hari ini.\n"
-                f"📅 Waktu: {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"Support: {support:.2f}\n"
-                f"Resistance: {resistance:.2f}\n"
-                f"💡 Harap evaluasi kondisi pasar dan gunakan manajemen risiko yang baik."
-            )
-
-        signals_buffer.append(msg)
-        await application.bot.send_message(chat_id=CHAT_ID, text=msg)
-
-        if len(signals_buffer) >= 5:
-            recap = "📊 Rekap 5 sinyal terakhir:\n\n" + "\n\n".join(signals_buffer[-5:])
-            await application.bot.send_message(chat_id=CHAT_ID, text=recap)
+            await application.bot.send_message(chat_id=CHAT_ID, text="❌ Tidak ada sinyal valid saat ini.")
 
     except Exception as e:
-        logging.error(f"Error analisa sinyal: {e}")
-        await application.bot.send_message(chat_id=CHAT_ID, text=f"⚠️ Error: {e}")
-
-async def daily_recap(context):
-    global signals_buffer
-    application = context.application
-    if signals_buffer:
-        recap = "\n\n".join(signals_buffer)
-        await application.bot.send_message(chat_id=CHAT_ID, text=f"📅 Rekapan Harian XAU/USD:\n\n{recap}")
-        signals_buffer.clear()
+        logging.error(f"Error saat generate sinyal: {e}")
+        await application.bot.send_message(chat_id=CHAT_ID, text=f"❌ Terjadi kesalahan saat analisa sinyal: {e}")
 
 async def start(update, context):
-    await update.message.reply_text("✅ Bot sinyal scalping XAU/USD aktif. Sinyal keluar tiap 45 menit.")
+    await update.message.reply_text("Bot sudah aktif dan siap kirim sinyal XAU/USD.")
+    # Jalankan tugas loop kirim sinyal tiap 5 menit
+    async def job():
+        while True:
+            await send_signal(context)
+            await asyncio.sleep(300)  # delay 5 menit
 
-async def weekend_message(update, context):
-    now = datetime.now(timezone.utc) + timedelta(hours=7)
-    if is_weekend(now):
-        await update.message.reply_text(f"📢 Market tutup hari ini ({now.strftime('%A')}).\nSebaiknya istirahat dan siapkan strategi untuk pekan depan.")
-    else:
-        await update.message.reply_text("Market buka dan siap memberikan sinyal setiap 45 menit.")
+    asyncio.create_task(job())
 
-async def weekend_check_and_notify(context):
-    now = datetime.now(timezone.utc) + timedelta(hours=7)
-    if is_weekend(now):
-        msg = f"📢 Market tutup hari ini ({now.strftime('%A')}).\nSebaiknya istirahat dan siapkan strategi untuk pekan depan."
-        await context.application.bot.send_message(chat_id=CHAT_ID, text=msg)
-
-async def main():
+if __name__ == "__main__":
     keep_alive()
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("market", weekend_message))
-
-    application.job_queue.run_repeating(send_signal, interval=2700, first=10)
-    application.job_queue.run_daily(daily_recap, time=time(hour=23, minute=50))
-    application.job_queue.run_daily(weekend_check_and_notify, time=time(hour=9, minute=0))
-
-    await application.run_polling()
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    application.run_polling()

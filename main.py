@@ -54,7 +54,10 @@ def find_snr(df):
     return support, resistance
 
 def confirm_trend_from_last_3(df):
+    # cek 3 candle terakhir sebelum candle terakhir di df
     candles = df.tail(4)
+    if len(candles) < 4:
+        return None
     c1, c2, c3 = candles.iloc[-4:-1].to_dict('records')
     uptrend = all(c["close"] > c["open"] for c in [c1, c2, c3])
     downtrend = all(c["close"] < c["open"] for c in [c1, c2, c3])
@@ -66,6 +69,7 @@ def confirm_trend_from_last_3(df):
         return None
 
 def generate_signal(df):
+    # Hitung indikator untuk df yang sudah berisi 8 candle analisa
     df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
     df["ma"] = ta.trend.SMAIndicator(df["close"], window=50).sma_indicator()
     df["ema"] = ta.trend.EMAIndicator(df["close"], window=20).ema_indicator()
@@ -121,6 +125,7 @@ def calculate_tp_sl(signal, entry, score):
     return tp1, tp2, sl, tp1_pips, tp2_pips, sl_pips
 
 def adjust_entry(signal, entry, last_close):
+    # Entry disesuaikan agar realistis, sedikit di bawah/atas harga close candle ke-8
     if signal == "BUY" and entry >= last_close:
         entry = last_close - 0.01
     elif signal == "SELL" and entry <= last_close:
@@ -145,22 +150,19 @@ async def send_signal(context):
 
     # Kirim sinyal terakhir hari Jumat jam 22:00 + rekap + weekend message
     if now.weekday() == 4 and now.time() >= time(22, 0):
-        # Rekap harian singkat
         candles = fetch_twelvedata("XAU/USD", "5min", 100)
         if candles is None:
             await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data untuk rekap akhir Jumat.")
             return
         df = prepare_df(candles)
-        df = df.tail(5)  # 5 candle terakhir
-        # Rekap TP dan SL sederhana (contoh)
+        df = df.tail(5)
         tp_total = 0
         sl_total = 0
         count_tp = 0
         count_sl = 0
         for i in range(len(df)):
-            # Dummy cek: close > open -> tp1 tercapai, close < open -> sl tercapai
             if df.iloc[i]["close"] > df.iloc[i]["open"]:
-                tp_total += 20  # pips asumsi
+                tp_total += 20
                 count_tp += 1
             else:
                 sl_total += 10
@@ -185,24 +187,28 @@ async def send_signal(context):
         await application.bot.send_message(chat_id=CHAT_ID, text="📢 Selamat pagi! Bot akan mulai analisa market jam 08:00 WIB. Harap bersabar.")
         return
 
-    # Cek interval 45 menit (5min candle x 9 = 45 menit)
-    # Kirim sinyal hanya setiap kelipatan 45 menit: menit 0,45
+    # Kirim sinyal tiap kelipatan 45 menit saja: menit 0 dan 45
     if now.minute % 45 != 0:
         return
 
-    # Ambil data 8 candle terakhir untuk analisa
-    candles = fetch_twelvedata("XAU/USD", "5min", 100)
-    if candles is None:
-        await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data XAU/USD")
+    # Ambil 9 candle terakhir (analisa 8 candle pertama, eksekusi di candle ke-9)
+    candles = fetch_twelvedata("XAU/USD", "5min", 9)
+    if candles is None or len(candles) < 9:
+        await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data XAU/USD (9 candle belum lengkap)")
         return
     df = prepare_df(candles)
-    df = df.tail(8)  # 8 candle terakhir
 
-    result, score, support, resistance = generate_signal(df)
+    # Ambil 8 candle pertama untuk analisa sinyal
+    df_analyze = df.iloc[0:8]
+
+    result, score, support, resistance = generate_signal(df_analyze)
 
     if result:
         signal, entry, rsi, atr, ma, ema = result
-        entry = adjust_entry(signal, entry, df["close"].iloc[-1])
+
+        last_close = df_analyze["close"].iloc[-1]  # candle ke-8 close
+        entry = adjust_entry(signal, entry, last_close)
+
         tp1, tp2, sl, tp1_pips, tp2_pips, sl_pips = calculate_tp_sl(signal if signal != "LEMAH" else "BUY", entry, score)
 
         status_text = format_status(score)
@@ -216,6 +222,7 @@ async def send_signal(context):
             f"💰 Entry: {entry:.2f} ({entry_note})\n"
             f"🎯 TP1: {tp1:.2f} (+{tp1_pips} pips), TP2: {tp2:.2f} (+{tp2_pips} pips)\n"
             f"🛑 SL: {sl:.2f} (-{sl_pips} pips)\n"
+            f"⏳ *Eksekusi sinyal dilakukan pada candle berikutnya (candle ke-9)*"
         )
         await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
         signals_buffer.append(signal)

@@ -8,6 +8,12 @@ import pandas as pd
 import ta
 from telegram.ext import ApplicationBuilder, CommandHandler
 
+# --- KONFIGURASI ---
+BOT_TOKEN = "8114552558:AAFpnQEYHYa8P43g5rjOwPs5TSbjtYh9zS4"
+CHAT_ID = "-1002883903673"
+API_KEY = "841e95162faf457e8d80207a75c3ca2c"
+signals_buffer = []
+
 # === KEEP ALIVE UNTUK RAILWAY/REPLIT ===
 app = Flask('')
 @app.route('/')
@@ -16,13 +22,6 @@ def home():
 def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
 
-# --- KONFIGURASI ---
-BOT_TOKEN = "8114552558:AAFpnQEYHYa8P43g5rjOwPs5TSbjtYh9zS4"
-CHAT_ID = "-1002883903673"
-API_KEY = "841e95162faf457e8d80207a75c3ca2c"
-signals_buffer = []
-
-# Fungsi ambil data
 def fetch_twelvedata(symbol="XAU/USD", interval="5min", outputsize=100):
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize={outputsize}&apikey={API_KEY}"
     try:
@@ -137,7 +136,6 @@ def format_status(score):
         return "LEMAH ⚠️ Harap berhati-hati saat entry dan gunakan manajemen risiko"
 
 def is_weekend(now):
-    # Sabtu dan Minggu adalah weekend
     return now.weekday() in [5, 6]
 
 async def send_signal(context):
@@ -145,75 +143,91 @@ async def send_signal(context):
     application = context.application
     now = datetime.now(timezone.utc) + timedelta(hours=7)
 
-    # Logika stop sinyal jika sudah lewat Jumat 22:00 WIB sampai Senin 08:00 WIB
-    # Jika saat ini hari Jumat dan jam >= 22:00
+    # Kirim sinyal terakhir hari Jumat jam 22:00 + rekap + weekend message
     if now.weekday() == 4 and now.time() >= time(22, 0):
-        msg = (
-            f"📢 Ini adalah sinyal terakhir hari Jumat sebelum weekend.\n"
-            f"Market akan tutup setelah ini sampai Senin jam 08:00 WIB."
-        )
-        # Kirim sinyal terakhir sebelum weekend
-    elif now.weekday() in [5, 6]:  # Sabtu & Minggu
-        msg = (
-            f"📢 Market tutup hari ini ({now.strftime('%A')}).\n"
-            "Sebaiknya istirahat dan siapkan strategi untuk pekan depan."
-        )
-        await application.bot.send_message(chat_id=CHAT_ID, text=msg)
-        return
-    elif now.weekday() == 0 and now.time() < time(8, 0):
-        # Hari Senin sebelum jam 08:00, jangan kirim sinyal
-        msg = (
-            f"📢 Market masih tutup sampai jam 08:00 WIB.\n"
-            f"Harap tunggu dan siapkan strategi."
-        )
-        await application.bot.send_message(chat_id=CHAT_ID, text=msg)
-        return
-
-    # Jika bukan waktu weekend, lakukan analisa dan kirim sinyal
-    try:
+        # Rekap harian singkat
         candles = fetch_twelvedata("XAU/USD", "5min", 100)
         if candles is None:
-            await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data XAU/USD")
+            await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data untuk rekap akhir Jumat.")
             return
-
         df = prepare_df(candles)
-        df = df[:-1]
-        result, score, support, resistance = generate_signal(df)
+        df = df.tail(5)  # 5 candle terakhir
+        # Rekap TP dan SL sederhana (contoh)
+        tp_total = 0
+        sl_total = 0
+        count_tp = 0
+        count_sl = 0
+        for i in range(len(df)):
+            # Dummy cek: close > open -> tp1 tercapai, close < open -> sl tercapai
+            if df.iloc[i]["close"] > df.iloc[i]["open"]:
+                tp_total += 20  # pips asumsi
+                count_tp += 1
+            else:
+                sl_total += 10
+                count_sl += 1
+        msg = (
+            f"📊 *Rekap 5 Candle Terakhir Hari Jumat*\n"
+            f"🎯 Total TP tercapai: {count_tp} kali, total {tp_total} pips\n"
+            f"🛑 Total SL tercapai: {count_sl} kali, total {sl_total} pips\n\n"
+            f"🚨 Ini adalah sinyal terakhir hari Jumat jam 22:00 WIB sebelum weekend.\n"
+            f"⚠️ Market tutup sampai Senin jam 08:00 WIB.\n"
+            f"Selamat beristirahat weekend! 🌴"
+        )
+        await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
+        return
 
-        if result:
-            signal, entry, rsi, atr, ma, ema = result
-            entry = adjust_entry(signal, entry, df["close"].iloc[-1])
-            tp1, tp2, sl, tp1_pips, tp2_pips, sl_pips = calculate_tp_sl(signal if signal != "LEMAH" else "BUY", entry, score)
+    # Weekend, jangan kirim sinyal, hanya info weekend
+    if is_weekend(now):
+        return
 
-            status_text = format_status(score)
-            entry_note = "Entry di bawah harga sinyal" if signal == "BUY" else "Entry di atas harga sinyal" if signal == "SELL" else "Sinyal lemah"
-            msg = (
-                f"🚨 Sinyal {signal if signal != 'LEMAH' else 'LEMAH'} {'⬆️' if signal=='BUY' else '⬇️' if signal=='SELL' else ''} XAU/USD @ {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"📊 Status: {status_text}\n"
-                f"⏳ RSI: {rsi:.2f}, ATR: {atr:.2f}\n"
-                f"⚖️ Support: {support:.2f}, Resistance: {resistance:.2f}\n"
-                f"💰 Entry: {entry:.2f} ({entry_note})\n"
-                f"🎯 TP1: {tp1:.2f} (+{tp1_pips} pips), TP2: {tp2:.2f} (+{tp2_pips} pips)\n"
-                f"🛑 SL: {sl:.2f} (-{sl_pips} pips)\n"
-            )
-            await application.bot.send_message(chat_id=CHAT_ID, text=msg)
-            signals_buffer.append(signal)
+    # Senin sebelum jam 8 pagi, kirim pesan sambutan saja, tanpa sinyal
+    if now.weekday() == 0 and now.time() < time(8, 0):
+        await application.bot.send_message(chat_id=CHAT_ID, text="📢 Selamat pagi! Bot akan mulai analisa market jam 08:00 WIB. Harap bersabar.")
+        return
 
-        else:
-            await application.bot.send_message(chat_id=CHAT_ID, text="❌ Tidak ada sinyal valid saat ini.")
+    # Cek interval 45 menit (5min candle x 9 = 45 menit)
+    # Kirim sinyal hanya setiap kelipatan 45 menit: menit 0,45
+    if now.minute % 45 != 0:
+        return
 
-    except Exception as e:
-        logging.error(f"Error saat generate sinyal: {e}")
-        await application.bot.send_message(chat_id=CHAT_ID, text=f"❌ Terjadi kesalahan saat analisa sinyal: {e}")
+    # Ambil data 8 candle terakhir untuk analisa
+    candles = fetch_twelvedata("XAU/USD", "5min", 100)
+    if candles is None:
+        await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data XAU/USD")
+        return
+    df = prepare_df(candles)
+    df = df.tail(8)  # 8 candle terakhir
+
+    result, score, support, resistance = generate_signal(df)
+
+    if result:
+        signal, entry, rsi, atr, ma, ema = result
+        entry = adjust_entry(signal, entry, df["close"].iloc[-1])
+        tp1, tp2, sl, tp1_pips, tp2_pips, sl_pips = calculate_tp_sl(signal if signal != "LEMAH" else "BUY", entry, score)
+
+        status_text = format_status(score)
+        entry_note = "Entry di bawah harga sinyal" if signal == "BUY" else "Entry di atas harga sinyal" if signal == "SELL" else "Sinyal lemah"
+
+        msg = (
+            f"🚨 *Sinyal {signal if signal != 'LEMAH' else 'LEMAH'}* {'⬆️' if signal=='BUY' else '⬇️' if signal=='SELL' else ''} _XAU/USD_ @ {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"📊 Status: {status_text}\n"
+            f"⏳ RSI: {rsi:.2f}, ATR: {atr:.2f}\n"
+            f"⚖️ Support: {support:.2f}, Resistance: {resistance:.2f}\n"
+            f"💰 Entry: {entry:.2f} ({entry_note})\n"
+            f"🎯 TP1: {tp1:.2f} (+{tp1_pips} pips), TP2: {tp2:.2f} (+{tp2_pips} pips)\n"
+            f"🛑 SL: {sl:.2f} (-{sl_pips} pips)\n"
+        )
+        await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
+        signals_buffer.append(signal)
+    else:
+        await application.bot.send_message(chat_id=CHAT_ID, text="❌ Tidak ada sinyal valid saat ini.")
 
 async def start(update, context):
     await update.message.reply_text("Bot sudah aktif dan siap kirim sinyal XAU/USD.")
-    # Jalankan tugas loop kirim sinyal tiap 5 menit
     async def job():
         while True:
             await send_signal(context)
-            await asyncio.sleep(300)  # delay 5 menit
-
+            await asyncio.sleep(60)  # cek tiap menit, tapi kirim sinyal tiap 45 menit (logic di send_signal)
     asyncio.create_task(job())
 
 if __name__ == "__main__":

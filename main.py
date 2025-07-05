@@ -67,26 +67,31 @@ def generate_signal(df):
     df["atr"] = ta.volatility.AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
 
     support, resistance = find_snr(df)
-    last_candle = df.iloc[-1]
-    rsi_now = last_candle["rsi"]
-    ma = last_candle["ma"]
-    ema = last_candle["ema"]
-    atr = last_candle["atr"]
+    last_close = df["close"].iloc[-1]
+    rsi_now = df["rsi"].iloc[-1]
+    ma = df["ma"].iloc[-1]
+    ema = df["ema"].iloc[-1]
+    atr = df["atr"].iloc[-1]
 
     trend = confirm_trend_from_last_3(df)
     if not trend:
-        # Walau tanpa trend, tetap keluarkan sinyal "lemah" dengan entry konservatif
-        return ("NONE", last_candle, support, resistance, rsi_now, atr, ma, ema), 0
+        return None, 0
 
     score = 0
     if atr > 0.2:
         score += 1
-    if trend == "BUY" and last_candle["close"] > ma and last_candle["close"] > ema and rsi_now < 70:
+    if trend == "BUY" and last_close > ma and last_close > ema and rsi_now < 70:
         score += 2
-    elif trend == "SELL" and last_candle["close"] < ma and last_candle["close"] < ema and rsi_now > 30:
+    elif trend == "SELL" and last_close < ma and last_close < ema and rsi_now > 30:
         score += 2
 
-    return (trend, last_candle, support, resistance, rsi_now, atr, ma, ema), score
+    if score >= 3:
+        return (trend, last_close, support, resistance, rsi_now, atr, ma, ema), score
+    elif score == 2:
+        return (trend, last_close, support, resistance, rsi_now, atr, ma, ema), score
+    else:
+        # tetap kembalikan signal tapi dengan score rendah untuk jaga sinyal tetap keluar
+        return (trend, last_close, support, resistance, rsi_now, atr, ma, ema), score
 
 async def send_signal(context):
     global signals_buffer
@@ -102,52 +107,55 @@ async def send_signal(context):
         result, score = generate_signal(df)
         wib_time = datetime.now(timezone.utc) + timedelta(hours=7)
 
-        signal, last_candle, support, resistance, rsi, atr, ma, ema = result
+        support, resistance = None, None
+        if result:
+            signal, entry, support, resistance, rsi, atr, ma, ema = result
 
-        offset = atr * 0.1  # offset kecil agar entry realistis
+            pips_to_price = 0.01  # 1 pip = 0.01 pada XAU/USD
+            tp1_pips = 30
+            tp2_pips = 40
+            sl_pips = 20
 
-        if signal == "BUY":
-            entry = round(last_candle["low"] - offset, 2)
-            tp1 = round(entry + 0.40, 2)
-            tp2 = round(entry + 0.55, 2)
-            sl = round(entry - 0.25, 2)
-            entry_note = "Entry di bawah harga sinyal"
-        elif signal == "SELL":
-            entry = round(last_candle["high"] + offset, 2)
-            tp1 = round(entry - 0.40, 2)
-            tp2 = round(entry - 0.55, 2)
-            sl = round(entry + 0.25, 2)
-            entry_note = "Entry di atas harga sinyal"
+            if signal == "BUY":
+                tp1 = round(entry + tp1_pips * pips_to_price, 2)
+                tp2 = round(entry + tp2_pips * pips_to_price, 2)
+                sl = round(entry - sl_pips * pips_to_price, 2)
+                # Saran entry: entry di bawah harga sinyal
+                entry_saran = f"Entry di bawah harga sinyal (realtime): {entry:.2f}"
+            else:  # SELL
+                tp1 = round(entry - tp1_pips * pips_to_price, 2)
+                tp2 = round(entry - tp2_pips * pips_to_price, 2)
+                sl = round(entry + sl_pips * pips_to_price, 2)
+                # Saran entry: entry di atas harga sinyal
+                entry_saran = f"Entry di atas harga sinyal (realtime): {entry:.2f}"
+
+            # Kategori sinyal berdasar score
+            if score >= 3:
+                status = "GOLDEN MOMENT 🌟"
+            elif score == 2:
+                status = "SEDANG ⚠️"
+            else:
+                status = "LEMAH ⚠️ Harap berhati-hati saat entry dan gunakan manajemen risiko"
+
+            msg = (
+                f"🚨 Sinyal {signal} {'⬆️' if signal=='BUY' else '⬇️'} XAU/USD @ {wib_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"📊 Status: {status}\n"
+                f"📈 {entry_saran}\n"
+                f"🎯 TP1: {tp1} (+{tp1_pips} pips)\n"
+                f"🎯 TP2: {tp2} (+{tp2_pips} pips)\n"
+                f"🛑 SL: {sl} (-{sl_pips} pips)\n"
+                f"📊 RSI: {rsi:.2f}, ATR: {atr:.2f}\n"
+                f"MA50: {ma:.2f}, EMA20: {ema:.2f}\n"
+                f"Support: {support:.2f}, Resistance: {resistance:.2f}"
+            )
         else:
-            # No valid trend, entry konservatif di tengah range candle terakhir
-            entry = round((last_candle["high"] + last_candle["low"]) / 2, 2)
-            tp1 = round(entry + 0.15, 2)
-            tp2 = round(entry + 0.25, 2)
-            sl = round(entry - 0.10, 2)
-            entry_note = "Sinyal lemah, entry konservatif"
-
-        if score >= 3:
-            strength = "GOLDEN MOMENT 🌟"
-        elif score == 2:
-            strength = "SEDANG ⚠️"
-        else:
-            strength = "LEMAH ⚠️ Harap berhati-hati saat entry dan gunakan manajemen risiko"
-
-        pips_tp1 = int(abs(tp1 - entry) * 100)
-        pips_tp2 = int(abs(tp2 - entry) * 100)
-        pips_sl = int(abs(sl - entry) * 100)
-
-        msg = (
-            f"🚨 Sinyal {signal if signal in ['BUY','SELL'] else 'LEMAH'} ⬆️ XAU/USD @ {wib_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"📊 Status: {strength}\n"
-            f"📈 Entry: {entry} ({entry_note})\n"
-            f"🎯 TP1: {tp1} (+{pips_tp1} pips)\n"
-            f"🎯 TP2: {tp2} (+{pips_tp2} pips)\n"
-            f"🛑 SL: {sl} (-{pips_sl} pips)\n"
-            f"📊 RSI: {rsi:.2f}, ATR: {atr:.2f}\n"
-            f"MA50: {ma:.2f}, EMA20: {ema:.2f}\n"
-            f"Support: {support:.2f}, Resistance: {resistance:.2f}"
-        )
+            # Jangan pernah kirim sinyal gagal, buat sinyal lemah paksa
+            msg = (
+                f"⚠️ Sinyal LEMAH ⚠️ Kondisi pasar kurang jelas, gunakan manajemen risiko\n"
+                f"📅 Waktu: {wib_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"Support: {support:.2f if support else 0:.2f}, Resistance: {resistance:.2f if resistance else 0:.2f}\n"
+                f"💡 Harap evaluasi kondisi pasar dengan hati-hati."
+            )
 
         signals_buffer.append(msg)
         await application.bot.send_message(chat_id=CHAT_ID, text=msg)
@@ -168,6 +176,25 @@ async def daily_recap(context):
         await application.bot.send_message(chat_id=CHAT_ID, text=f"📅 Rekapan Harian XAU/USD:\n\n{recap}")
         signals_buffer.clear()
 
+async def weekend_notice(context):
+    application = context.application
+    wib_time = datetime.now(timezone.utc) + timedelta(hours=7)
+    weekday = wib_time.weekday()
+    hour = wib_time.hour
+
+    # Jumat jam 24:00 (tepatnya Sabtu 00:00 WIB)
+    if weekday == 4 and hour == 23:
+        await application.bot.send_message(chat_id=CHAT_ID, text=(
+            "📢 Pasar XAU/USD akan tutup pada Jumat malam pukul 24:00 WIB.\n"
+            "Selamat beristirahat, sampai jumpa di Senin dini hari!"
+        ))
+
+    # Senin jam 01:00 WIB
+    if weekday == 0 and hour == 1:
+        await application.bot.send_message(chat_id=CHAT_ID, text=(
+            "🚀 Selamat bekerja, mari kita siap membantai market XAU/USD di Senin dini hari!"
+        ))
+
 async def start(update, context):
     await update.message.reply_text("✅ Bot sinyal scalping XAU/USD aktif. Sinyal keluar tiap 45 menit.")
 
@@ -176,10 +203,9 @@ async def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
 
-    # Sinyal keluar tiap 45 menit (2700 detik)
-    application.job_queue.run_repeating(send_signal, interval=2700, first=1)
-    # Rekap harian jam 13:00 WIB
+    application.job_queue.run_repeating(send_signal, interval=2700, first=1)  # setiap 45 menit
     application.job_queue.run_daily(daily_recap, time=time(hour=13, minute=0))
+    application.job_queue.run_repeating(weekend_notice, interval=3600, first=1)  # cek tiap jam
 
     print("Bot running...")
     await application.run_polling()

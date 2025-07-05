@@ -15,28 +15,20 @@ def home():
 def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
 
-# === KONFIGURASI ===
+# --- KONFIGURASI ---
 BOT_TOKEN = "8114552558:AAFpnQEYHYa8P43g5rjOwPs5TSbjtYh9zS4"
 CHAT_ID = "-1002883903673"
 API_KEY = "841e95162faf457e8d80207a75c3ca2c"
 signals_buffer = []
 
-# === LOGGING ===
-logging.basicConfig(
-    filename="signal_bot.log",
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-
-# === FUNGSI UTAMA ===
-
+# Fungsi ambil data
 def fetch_twelvedata(symbol="XAU/USD", interval="5min", outputsize=100):
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize={outputsize}&apikey={API_KEY}"
     try:
         res = requests.get(url)
         data = res.json()
-        if "values" not in data or len(data["values"]) < 30:
-            logging.warning(f"Data tidak cukup: {data}")
+        if "values" not in data:
+            logging.error("Data tidak tersedia: %s", data.get("message", ""))
             return None
         candles = [{
             "datetime": datetime.strptime(d["datetime"], "%Y-%m-%d %H:%M:%S"),
@@ -87,6 +79,9 @@ def generate_signal(df):
     atr = df["atr"].iloc[-1]
 
     trend = confirm_trend_from_last_3(df)
+    if not trend and atr > 0.2:
+        trend = "BUY" if last_close > ma else "SELL"  # fallback trend
+
     if not trend:
         return None, 0, support, resistance
 
@@ -98,22 +93,26 @@ def generate_signal(df):
     elif trend == "SELL" and last_close < ma and last_close < ema and rsi_now > 30:
         score += 2
 
-    if score >= 1:
-        return (trend, last_close, rsi_now, atr, ma, ema), score, support, resistance
-    else:
-        return None, score, support, resistance
+    return (trend, last_close, rsi_now, atr, ma, ema), score, support, resistance
 
 def calculate_tp_sl(signal, entry, score):
     if score >= 3:
-        tp1_pips, tp2_pips, sl_pips = 30, 55, 20
+        tp1_pips = 30
+        tp2_pips = 55
+        sl_pips = 20
     elif score == 2:
-        tp1_pips, tp2_pips, sl_pips = 25, 40, 20
+        tp1_pips = 25
+        tp2_pips = 40
+        sl_pips = 20
     else:
-        tp1_pips, tp2_pips, sl_pips = 15, 25, 15
+        tp1_pips = 15
+        tp2_pips = 25
+        sl_pips = 15
 
     tp1 = entry + tp1_pips * 0.1 if signal == "BUY" else entry - tp1_pips * 0.1
     tp2 = entry + tp2_pips * 0.1 if signal == "BUY" else entry - tp2_pips * 0.1
     sl = entry - sl_pips * 0.1 if signal == "BUY" else entry + sl_pips * 0.1
+
     return tp1, tp2, sl, tp1_pips, tp2_pips, sl_pips
 
 def adjust_entry(signal, entry, last_close):
@@ -133,8 +132,6 @@ def format_status(score):
 
 def is_weekend(now):
     return now.weekday() in [5, 6]
-
-# === SCHEDULER FUNCTIONS ===
 
 async def send_signal(context):
     global signals_buffer
@@ -179,11 +176,11 @@ async def send_signal(context):
             )
         else:
             msg = (
-                f"⚠️ Tidak ada sinyal kuat terdeteksi pada market saat ini.\n"
+                f"⚠️ Tidak ada trend yang jelas, namun tetap waspadai pergerakan harga.\n"
                 f"📅 Waktu: {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"Support: {support:.2f}\n"
                 f"Resistance: {resistance:.2f}\n"
-                f"Gunakan analisa manual dan tetap waspada."
+                f"💡 Manajemen risiko sangat penting."
             )
 
         signals_buffer.append(msg)
@@ -205,30 +202,27 @@ async def daily_recap(context):
         await application.bot.send_message(chat_id=CHAT_ID, text=f"📅 Rekapan Harian XAU/USD:\n\n{recap}")
         signals_buffer.clear()
 
-# === COMMAND HANDLER ===
-
 async def start(update, context):
     await update.message.reply_text("✅ Bot sinyal scalping XAU/USD aktif. Sinyal keluar tiap 45 menit.")
 
 async def weekend_message(update, context):
     now = datetime.now(timezone.utc) + timedelta(hours=7)
     if is_weekend(now):
-        await update.message.reply_text("⚠️ Market tutup hari Sabtu dan Minggu, sebaiknya istirahat dan siapkan strategi pekan depan.")
+        await update.message.reply_text("⚠️ Market tutup hari Sabtu dan Minggu.")
     else:
-        await update.message.reply_text("✅ Market buka dan sinyal akan dikirim setiap 45 menit.")
+        await update.message.reply_text("✅ Market sedang buka. Sinyal akan dikirim setiap 45 menit.")
 
-# === MAIN BOT ===
-
-async def main():
+# ✅ MAIN FUNCTION TANPA ERROR
+def main():
     keep_alive()
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("market", weekend_message))
+
     application.job_queue.run_repeating(send_signal, interval=2700, first=10)
     application.job_queue.run_daily(daily_recap, time=time(hour=23, minute=50))
-    await application.start()
-    await application.idle()
+
+    application.run_polling()
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    main()

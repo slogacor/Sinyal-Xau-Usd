@@ -6,11 +6,13 @@ from datetime import datetime, timedelta, time, timezone
 import asyncio
 import pandas as pd
 import ta
-from telegram.ext import ApplicationBuilder, CommandHandler
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # --- KONFIGURASI ---
 BOT_TOKEN = "8114552558:AAFpnQEYHYa8P43g5rjOwPs5TSbjtYh9zS4"
-CHAT_ID = "-1002883903673"
+CHAT_ID = "-1002883903673"  # Grup target
+AUTHORIZED_USER_ID = 1305881282  # Hanya kamu yang bisa menjalankan /start
 API_KEY = "841e95162faf457e8d80207a75c3ca2c"
 signals_buffer = []
 
@@ -54,7 +56,6 @@ def find_snr(df):
     return support, resistance
 
 def confirm_trend_from_last_3(df):
-    # cek 3 candle terakhir sebelum candle terakhir di df
     candles = df.tail(4)
     if len(candles) < 4:
         return None
@@ -69,7 +70,6 @@ def confirm_trend_from_last_3(df):
         return None
 
 def generate_signal(df):
-    # Hitung indikator untuk df yang sudah berisi 8 candle analisa
     df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
     df["ma"] = ta.trend.SMAIndicator(df["close"], window=50).sma_indicator()
     df["ema"] = ta.trend.EMAIndicator(df["close"], window=20).ema_indicator()
@@ -105,18 +105,12 @@ def generate_signal(df):
         return None, score, support, resistance
 
 def calculate_tp_sl(signal, entry, score):
-    if score >= 3:  # GOLDEN MOMENT
-        tp1_pips = 30
-        tp2_pips = 55
-        sl_pips = 20
-    elif score == 2:  # MODERATE
-        tp1_pips = 25
-        tp2_pips = 40
-        sl_pips = 20
-    else:  # LEMAH
-        tp1_pips = 15
-        tp2_pips = 25
-        sl_pips = 15
+    if score >= 3:
+        tp1_pips, tp2_pips, sl_pips = 30, 55, 20
+    elif score == 2:
+        tp1_pips, tp2_pips, sl_pips = 25, 40, 20
+    else:
+        tp1_pips, tp2_pips, sl_pips = 15, 25, 15
 
     tp1 = entry + tp1_pips * 0.1 if signal == "BUY" else entry - tp1_pips * 0.1
     tp2 = entry + tp2_pips * 0.1 if signal == "BUY" else entry - tp2_pips * 0.1
@@ -125,7 +119,6 @@ def calculate_tp_sl(signal, entry, score):
     return tp1, tp2, sl, tp1_pips, tp2_pips, sl_pips
 
 def adjust_entry(signal, entry, last_close):
-    # Entry disesuaikan agar realistis, sedikit di bawah/atas harga close candle ke-8
     if signal == "BUY" and entry >= last_close:
         entry = last_close - 0.01
     elif signal == "SELL" and entry <= last_close:
@@ -148,74 +141,47 @@ async def send_signal(context):
     application = context.application
     now = datetime.now(timezone.utc) + timedelta(hours=7)
 
-    # Kirim sinyal terakhir hari Jumat jam 22:00 + rekap + weekend message
     if now.weekday() == 4 and now.time() >= time(22, 0):
         candles = fetch_twelvedata("XAU/USD", "5min", 100)
         if candles is None:
             await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data untuk rekap akhir Jumat.")
             return
-        df = prepare_df(candles)
-        df = df.tail(5)
-        tp_total = 0
-        sl_total = 0
-        count_tp = 0
-        count_sl = 0
-        for i in range(len(df)):
-            if df.iloc[i]["close"] > df.iloc[i]["open"]:
-                tp_total += 20
-                count_tp += 1
-            else:
-                sl_total += 10
-                count_sl += 1
+        df = prepare_df(candles).tail(5)
+        tp_total = sum(20 for i in df.itertuples() if i.close > i.open)
+        sl_total = sum(10 for i in df.itertuples() if i.close <= i.open)
         msg = (
             f"📊 *Rekap 5 Candle Terakhir Hari Jumat*\n"
-            f"🎯 Total TP tercapai: {count_tp} kali, total {tp_total} pips\n"
-            f"🛑 Total SL tercapai: {count_sl} kali, total {sl_total} pips\n\n"
-            f"🚨 Ini adalah sinyal terakhir hari Jumat jam 22:00 WIB sebelum weekend.\n"
-            f"⚠️ Market tutup sampai Senin jam 08:00 WIB.\n"
-            f"Selamat beristirahat weekend! 🌴"
+            f"🎯 Total TP: {tp_total} pips\n"
+            f"🛑 Total SL: {sl_total} pips\n"
+            f"🚨 Sinyal terakhir Jumat 22:00 WIB. Market tutup hingga Senin 08:00 WIB.\n"
+            f"Selamat weekend 🌴"
         )
         await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
         return
 
-    # Weekend, jangan kirim sinyal, hanya info weekend
-    if is_weekend(now):
+    if is_weekend(now) or (now.weekday() == 0 and now.time() < time(8, 0)):
         return
 
-    # Senin sebelum jam 8 pagi, kirim pesan sambutan saja, tanpa sinyal
-    if now.weekday() == 0 and now.time() < time(8, 0):
-        await application.bot.send_message(chat_id=CHAT_ID, text="📢 Selamat pagi! Bot akan mulai analisa market jam 08:00 WIB. Harap bersabar.")
-        return
-
-    # Kirim sinyal tiap kelipatan 45 menit saja: menit 0 dan 45
     if now.minute % 45 != 0:
         return
 
-    # Ambil 9 candle terakhir (analisa 8 candle pertama, eksekusi di candle ke-9)
     candles = fetch_twelvedata("XAU/USD", "5min", 9)
     if candles is None or len(candles) < 9:
-        await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data XAU/USD (9 candle belum lengkap)")
+        await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data XAU/USD (kurang dari 9 candle)")
         return
     df = prepare_df(candles)
-
-    # Ambil 8 candle pertama untuk analisa sinyal
     df_analyze = df.iloc[0:8]
 
     result, score, support, resistance = generate_signal(df_analyze)
-
     if result:
         signal, entry, rsi, atr, ma, ema = result
-
-        last_close = df_analyze["close"].iloc[-1]  # candle ke-8 close
+        last_close = df_analyze["close"].iloc[-1]
         entry = adjust_entry(signal, entry, last_close)
-
-        tp1, tp2, sl, tp1_pips, tp2_pips, sl_pips = calculate_tp_sl(signal if signal != "LEMAH" else "BUY", entry, score)
-
+        tp1, tp2, sl, tp1_pips, tp2_pips, sl_pips = calculate_tp_sl(signal, entry, score)
         status_text = format_status(score)
-        entry_note = "Entry di bawah harga sinyal" if signal == "BUY" else "Entry di atas harga sinyal" if signal == "SELL" else "Sinyal lemah"
-
+        entry_note = "Entry di bawah harga sinyal" if signal == "BUY" else "Entry di atas harga sinyal"
         msg = (
-            f"🚨 *Sinyal {signal if signal != 'LEMAH' else 'LEMAH'}* {'⬆️' if signal=='BUY' else '⬇️' if signal=='SELL' else ''} _XAU/USD_ @ {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"🚨 *Sinyal {signal}* {'⬆️' if signal=='BUY' else '⬇️'} _XAU/USD_ @ {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"📊 Status: {status_text}\n"
             f"⏳ RSI: {rsi:.2f}, ATR: {atr:.2f}\n"
             f"⚖️ Support: {support:.2f}, Resistance: {resistance:.2f}\n"
@@ -229,12 +195,18 @@ async def send_signal(context):
     else:
         await application.bot.send_message(chat_id=CHAT_ID, text="❌ Tidak ada sinyal valid saat ini.")
 
-async def start(update, context):
-    await update.message.reply_text("Bot sudah aktif dan siap kirim sinyal XAU/USD.")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != AUTHORIZED_USER_ID:
+        await update.message.reply_text("❌ Anda tidak diizinkan menjalankan bot ini.")
+        return
+
+    await update.message.reply_text("✅ Bot aktif dan akan mulai mengirim sinyal setiap 45 menit.")
+    
     async def job():
         while True:
             await send_signal(context)
-            await asyncio.sleep(60)  # cek tiap menit, tapi kirim sinyal tiap 45 menit (logic di send_signal)
+            await asyncio.sleep(60)
+    
     asyncio.create_task(job())
 
 if __name__ == "__main__":

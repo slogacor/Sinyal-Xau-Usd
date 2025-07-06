@@ -7,7 +7,8 @@ import asyncio
 import pandas as pd
 import ta
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackContext
+import pytz
 
 # --- KONFIGURASI ---
 BOT_TOKEN = "8114552558:AAFpnQEYHYa8P43g5rjOwPs5TSbjtYh9zS4"
@@ -134,47 +135,16 @@ def format_status(score):
     else:
         return "LEMAH ⚠️ Harap berhati-hati saat entry dan gunakan manajemen risiko"
 
+def is_weekend(now):
+    return now.weekday() in [5, 6]
+
 # === KIRIM SINYAL ===
 async def send_signal(context):
     global signals_buffer
     application = context.application
     now = datetime.now(timezone.utc) + timedelta(hours=7)
 
-    # Jumat 22:00 rekap + penutup lucu
-    if now.weekday() == 4 and now.time().hour == 22 and now.time().minute == 0:
-        candles = fetch_twelvedata("XAU/USD", "5min", 100)
-        if candles is None:
-            await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data untuk rekap akhir Jumat.")
-            return
-        df = prepare_df(candles).tail(5)
-        tp_total = sum(20 for i in df.itertuples() if i.close > i.open)
-        sl_total = sum(10 for i in df.itertuples() if i.close <= i.open)
-        msg = (
-            f"📊 *Rekap 5 Candle Terakhir Hari Jumat*\n"
-            f"🎯 Total TP: {tp_total} pips\n"
-            f"🛑 Total SL: {sl_total} pips\n\n"
-            f"🤖 Bot mau *healing dulu ke Swiss 🇨🇭*, nikmatin udara dingin sambil ngopi ☕️\n"
-            f"🕛 Market tutup. Kita ketemu lagi hari *Senin jam 08:00 WIB* yaa!\n"
-            f"🥳 *Selamat weekend, jangan overtrade yaa!*"
-        )
-        await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
-        return
-
-    # Senin 08:00 pagi sambutan kocak
-    if now.weekday() == 0 and now.time().hour == 8 and now.time().minute == 0:
-        msg = (
-            "🎉 *Senin Ceria!*\n"
-            "🤖 Bot baru balik dari *healing di Swiss 🇨🇭*, fresh banget nih!\n"
-            "🚀 Saatnya kita lanjut cari cuan di XAU/USD\n"
-            "💥 Pantau sinyal tiap 45 menit mulai sekarang!"
-        )
-        await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
-        return
-
-    if now.weekday() in [5, 6] or (now.weekday() == 0 and now.time() < time(8, 0)):
-        return
-
-    if now.minute % 45 != 0:
+    if is_weekend(now) or (now.weekday() == 0 and now.time() < time(8, 0)):
         return
 
     candles = fetch_twelvedata("XAU/USD", "5min", 9)
@@ -184,8 +154,8 @@ async def send_signal(context):
 
     df = prepare_df(candles)
     df_analyze = df.iloc[0:8]
-
     result, score, support, resistance = generate_signal(df_analyze)
+
     if result:
         signal, entry, rsi, atr, ma, ema = result
         last_close = df_analyze["close"].iloc[-1]
@@ -208,18 +178,39 @@ async def send_signal(context):
     else:
         await application.bot.send_message(chat_id=CHAT_ID, text="❌ Tidak ada sinyal valid saat ini.")
 
-# === COMMAND HANDLERS ===
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != AUTHORIZED_USER_ID:
-        await update.message.reply_text("❌ Anda tidak diizinkan menjalankan bot ini.")
+# === REKAP HARIAN ===
+async def daily_recap(context: CallbackContext):
+    application = context.application
+    now = datetime.now(timezone.utc) + timedelta(hours=7)
+    candles = fetch_twelvedata("XAU/USD", "5min", 5)
+    if not candles:
+        await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data untuk rekap harian.")
         return
-    await update.message.reply_text("✅ Bot aktif dan akan mulai mengirim sinyal setiap 45 menit.")
-    async def job():
-        while True:
-            await send_signal(context)
-            await asyncio.sleep(60)
-    asyncio.create_task(job())
 
+    df = prepare_df(candles)
+    tp_total = sum(20 for i in df.itertuples() if i.close > i.open)
+    sl_total = sum(10 for i in df.itertuples() if i.close <= i.open)
+    hari = now.strftime("%A")
+
+    if now.weekday() == 4:
+        msg = (
+            f"📊 *Rekap 5 Candle Terakhir Hari {hari}*\n"
+            f"🎯 Total TP: {tp_total} pips\n"
+            f"🛑 Total SL: {sl_total} pips\n\n"
+            f"🎉 Bot mau healing dulu ke Swiss 🏔️ bawa koper emas 😎.\n"
+            f"📴 Market tutup. Kita lanjut lagi hari Senin jam 08:00 WIB ya!\n"
+            f"🍹 Happy Weekend!"
+        )
+    else:
+        msg = (
+            f"📊 *Rekap 5 Candle Terakhir Hari {hari}*\n"
+            f"🎯 Total TP: {tp_total} pips\n"
+            f"🛑 Total SL: {sl_total} pips\n\n"
+            f"📌 Bot masih siaga, sinyal berikutnya akan dikirim seperti biasa setiap 45 menit ⏱️"
+        )
+    await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
+
+# === COMMAND PRICE ===
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = fetch_twelvedata("XAU/USD", "1min", 1)
     if data:
@@ -229,10 +220,18 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Gagal mengambil harga XAU/USD saat ini.")
 
-# === MAIN BOT ===
+# === MAIN ===
 if __name__ == "__main__":
     keep_alive()
     application = ApplicationBuilder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("price", price))
+
+    # Jadwal sinyal tiap 45 menit
+    application.job_queue.run_repeating(send_signal, interval=2700, first=10)
+
+    # Jadwal rekap harian jam 22:00 WIB
+    jakarta = pytz.timezone("Asia/Jakarta")
+    jam_22 = time(22, 0, tzinfo=jakarta)
+    application.job_queue.run_daily(daily_recap, time=jam_22)
+
     application.run_polling()

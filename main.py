@@ -11,12 +11,12 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # --- KONFIGURASI ---
 BOT_TOKEN = "8114552558:AAFpnQEYHYa8P43g5rjOwPs5TSbjtYh9zS4"
-CHAT_ID = "-1002883903673"  # Grup target
-AUTHORIZED_USER_ID = 1305881282  # Hanya kamu yang bisa menjalankan /start
+CHAT_ID = "-1002883903673"
+AUTHORIZED_USER_ID = 1305881282
 API_KEY = "841e95162faf457e8d80207a75c3ca2c"
 signals_buffer = []
 
-# === KEEP ALIVE UNTUK RAILWAY/REPLIT ===
+# === KEEP ALIVE ===
 app = Flask('')
 @app.route('/')
 def home():
@@ -24,6 +24,7 @@ def home():
 def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
 
+# === DATA DAN ANALISIS ===
 def fetch_twelvedata(symbol="XAU/USD", interval="5min", outputsize=100):
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize={outputsize}&apikey={API_KEY}"
     try:
@@ -136,6 +137,7 @@ def format_status(score):
 def is_weekend(now):
     return now.weekday() in [5, 6]
 
+# === KIRIM SINYAL ===
 async def send_signal(context):
     global signals_buffer
     application = context.application
@@ -195,22 +197,32 @@ async def send_signal(context):
     else:
         await application.bot.send_message(chat_id=CHAT_ID, text="❌ Tidak ada sinyal valid saat ini.")
 
+# === COMMAND HANDLERS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != AUTHORIZED_USER_ID:
         await update.message.reply_text("❌ Anda tidak diizinkan menjalankan bot ini.")
         return
-
     await update.message.reply_text("✅ Bot aktif dan akan mulai mengirim sinyal setiap 45 menit.")
-    
+
     async def job():
         while True:
             await send_signal(context)
             await asyncio.sleep(60)
-    
     asyncio.create_task(job())
 
+async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    data = fetch_twelvedata("XAU/USD", "1min", 1)
+    if data:
+        price = data[0]["close"]
+        time_now = data[0]["datetime"].strftime('%Y-%m-%d %H:%M:%S')
+        await update.message.reply_text(f"💱 *Harga Realtime XAU/USD*\n🕒 {time_now}\n💰 {price:.2f}", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("❌ Gagal mengambil harga XAU/USD saat ini.")
+
+# === MAIN BOT ===
 if __name__ == "__main__":
     keep_alive()
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("price", price))
     application.run_polling()

@@ -134,16 +134,14 @@ def format_status(score):
     else:
         return "LEMAH ⚠️ Harap berhati-hati saat entry dan gunakan manajemen risiko"
 
-def is_weekend(now):
-    return now.weekday() in [5, 6]
-
 # === KIRIM SINYAL ===
 async def send_signal(context):
     global signals_buffer
     application = context.application
     now = datetime.now(timezone.utc) + timedelta(hours=7)
 
-    if now.weekday() == 4 and now.time() >= time(22, 0):
+    # Jumat 22:00 rekap + penutup lucu
+    if now.weekday() == 4 and now.time().hour == 22 and now.time().minute == 0:
         candles = fetch_twelvedata("XAU/USD", "5min", 100)
         if candles is None:
             await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data untuk rekap akhir Jumat.")
@@ -154,14 +152,26 @@ async def send_signal(context):
         msg = (
             f"📊 *Rekap 5 Candle Terakhir Hari Jumat*\n"
             f"🎯 Total TP: {tp_total} pips\n"
-            f"🛑 Total SL: {sl_total} pips\n"
-            f"🚨 Sinyal terakhir Jumat 22:00 WIB. Market tutup hingga Senin 08:00 WIB.\n"
-            f"Selamat weekend 🌴"
+            f"🛑 Total SL: {sl_total} pips\n\n"
+            f"🤖 Bot mau *healing dulu ke Swiss 🇨🇭*, nikmatin udara dingin sambil ngopi ☕️\n"
+            f"🕛 Market tutup. Kita ketemu lagi hari *Senin jam 08:00 WIB* yaa!\n"
+            f"🥳 *Selamat weekend, jangan overtrade yaa!*"
         )
         await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
         return
 
-    if is_weekend(now) or (now.weekday() == 0 and now.time() < time(8, 0)):
+    # Senin 08:00 pagi sambutan kocak
+    if now.weekday() == 0 and now.time().hour == 8 and now.time().minute == 0:
+        msg = (
+            "🎉 *Senin Ceria!*\n"
+            "🤖 Bot baru balik dari *healing di Swiss 🇨🇭*, fresh banget nih!\n"
+            "🚀 Saatnya kita lanjut cari cuan di XAU/USD\n"
+            "💥 Pantau sinyal tiap 45 menit mulai sekarang!"
+        )
+        await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="Markdown")
+        return
+
+    if now.weekday() in [5, 6] or (now.weekday() == 0 and now.time() < time(8, 0)):
         return
 
     if now.minute % 45 != 0:
@@ -171,6 +181,7 @@ async def send_signal(context):
     if candles is None or len(candles) < 9:
         await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data XAU/USD (kurang dari 9 candle)")
         return
+
     df = prepare_df(candles)
     df_analyze = df.iloc[0:8]
 
@@ -203,7 +214,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Anda tidak diizinkan menjalankan bot ini.")
         return
     await update.message.reply_text("✅ Bot aktif dan akan mulai mengirim sinyal setiap 45 menit.")
-
     async def job():
         while True:
             await send_signal(context)

@@ -8,6 +8,7 @@ import pandas as pd
 import ta
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import nest_asyncio
 
 # --- KONFIGURASI ---
 BOT_TOKEN = "8114552558:AAFpnQEYHYa8P43g5rjOwPs5TSbjtYh9zS4"
@@ -15,13 +16,14 @@ CHAT_ID = "-1002883903673"
 AUTHORIZED_USER_ID = 1305881282
 API_KEY = "841e95162faf457e8d80207a75c3ca2c"
 
+# Patch asyncio agar bisa jalan di event loop yg sudah berjalan
+nest_asyncio.apply()
+
 # === KEEP ALIVE ===
 app = Flask('')
-
 @app.route('/')
 def home():
     return "Bot is alive!"
-
 def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
 
@@ -180,24 +182,32 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Gagal mengambil harga XAU/USD saat ini.")
 
 # === MAIN ===
-async def periodic_signal(application):
-    while True:
-        try:
-            await send_signal(application)
-        except Exception as e:
-            logging.error(f"Error saat kirim sinyal: {e}")
-        await asyncio.sleep(60)  # cek setiap 60 detik
-
 async def main():
     keep_alive()
-
     application = ApplicationBuilder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("price", price))
 
-    # Task background kirim sinyal
-    asyncio.create_task(periodic_signal(application))
+    async def run_loop():
+        while True:
+            await send_signal(application)
+            await asyncio.sleep(60)
 
+    # Jalankan background task loop pengirim sinyal
+    asyncio.create_task(run_loop())
+
+    # Mulai polling bot Telegram
     await application.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Gunakan loop event yang sudah berjalan, patch dengan nest_asyncio
+    # supaya tidak error "event loop already running"
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # Jika event loop sudah berjalan (misal di Docker / Jupyter), buat task tanpa asyncio.run
+            loop.create_task(main())
+            loop.run_forever()
+        else:
+            asyncio.run(main())
+    except RuntimeError:
+        asyncio.run(main())

@@ -1,5 +1,5 @@
-Flask
-requests
-pandas
-ta
+Flask==2.3.2
+requests==2.31.0
 python-telegram-bot==20.3
+pandas==2.0.3
+ta==0.10.2

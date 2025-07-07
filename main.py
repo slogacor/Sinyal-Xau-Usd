@@ -2,7 +2,8 @@ from flask import Flask
 from threading import Thread
 import requests
 import logging
-from datetime import datetime, timedelta, time, timezone
+from datetime import datetime, timedelta, time
+from zoneinfo import ZoneInfo
 import asyncio
 import pandas as pd
 import ta
@@ -16,7 +17,8 @@ AUTHORIZED_USER_ID = 1305881282
 API_KEY = "841e95162faf457e8d80207a75c3ca2c"
 signals_buffer = []
 
-WIB = timezone(timedelta(hours=7))  # WIB timezone UTC+7
+# Zona waktu Jakarta
+WIB = ZoneInfo("Asia/Jakarta")
 
 # === KEEP ALIVE ===
 app = Flask('')
@@ -35,7 +37,7 @@ def fetch_twelvedata(symbol="XAU/USD", interval="5min", outputsize=100):
             logging.error("Data tidak tersedia: %s", data.get("message", ""))
             return None
         candles = [{
-            "datetime": datetime.strptime(d["datetime"], "%Y-%m-%d %H:%M:%S"),
+            "datetime": datetime.strptime(d["datetime"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=ZoneInfo("UTC")).astimezone(WIB),
             "open": float(d["open"]),
             "high": float(d["high"]),
             "low": float(d["low"]),
@@ -104,6 +106,7 @@ def calculate_tp_sl(signal, entry, score):
     else:
         tp1_pips, tp2_pips, sl_pips = 15, 25, 15
 
+    # XAU/USD biasanya punya harga 3 digit di belakang koma, jadi pips * 0.01
     tp1 = entry + tp1_pips * 0.01 if signal == "BUY" else entry - tp1_pips * 0.01
     tp2 = entry + tp2_pips * 0.01 if signal == "BUY" else entry - tp2_pips * 0.01
     sl = entry - sl_pips * 0.01 if signal == "BUY" else entry + sl_pips * 0.01
@@ -128,30 +131,11 @@ async def send_signal(context):
     application = context.application
     now = datetime.now(WIB)
 
-    # Jika hari Jumat jam 22:00 WIB kirim rekap, market dianggap tutup sampai Senin jam 08:00 WIB
-    if now.weekday() == 4 and now.time() >= time(22, 0):
-        candles = fetch_twelvedata("XAU/USD", "5min", 100)
-        if candles is None:
-            await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data untuk rekap akhir Jumat.")
-            return
-        df = prepare_df(candles).tail(5)
-        tp_total = sum(20 for i in df.itertuples() if i.close > i.open)
-        sl_total = sum(10 for i in df.itertuples() if i.close <= i.open)
-        msg = (
-            f"📊 *Rekap 5 Candle Terakhir Hari Jumat*\n"
-            f"🎯 Total TP: {tp_total} pips\n"
-            f"🛑 Total SL: {sl_total} pips\n"
-            f"🚨 Sinyal terakhir Jumat 22:00 WIB. Market tutup hingga Senin 08:00 WIB.\n"
-            f"Selamat weekend 🌴"
-        )
-        await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
-        return
-
-    # Jangan kirim sinyal saat weekend atau Senin sebelum jam 08:00 WIB
+    # Jangan kirim sinyal di weekend & Senin sebelum jam 8 pagi WIB
     if is_weekend(now) or (now.weekday() == 0 and now.time() < time(8, 0)):
         return
 
-    # Kirim sinyal setiap 45 menit saja (misal: 00, 45 menit)
+    # Kirim sinyal tiap 45 menit saja
     if now.minute % 45 != 0:
         return
 
@@ -171,7 +155,7 @@ async def send_signal(context):
         status_text = format_status(score)
         entry_note = "Entry di bawah harga sinyal" if signal == "BUY" else "Entry di atas harga sinyal"
         msg = (
-            f"🚨 *Sinyal {signal}* {'⬆️' if signal=='BUY' else '⬇️'} _XAU/USD_ @ {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"🚨 *Sinyal {signal}* {'⬆️' if signal=='BUY' else '⬇️'} _XAU/USD_ @ {now.strftime('%Y-%m-%d %H:%M:%S WIB')}\n"
             f"📊 Status: {status_text}\n"
             f"⏳ RSI: {rsi:.2f}, ATR: {atr:.2f}\n"
             f"⚖️ Support: {support:.2f}, Resistance: {resistance:.2f}\n"
@@ -191,7 +175,7 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last = candles[0]
         msg = (
             f"💱 *XAU/USD Price*\n"
-            f"🕒 {last['datetime']}\n"
+            f"🕒 {last['datetime'].strftime('%Y-%m-%d %H:%M:%S WIB')}\n"
             f"🔼 Open: {last['open']:.2f}\n"
             f"🔽 Close: {last['close']:.2f}\n"
             f"📈 High: {last['high']:.2f}\n"

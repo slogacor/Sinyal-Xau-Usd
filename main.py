@@ -188,5 +188,6 @@ if __name__ == "__main__":
             await send_signal(application)
             await asyncio.sleep(60)
 
-    asyncio.get_event_loop().create_task(run_loop())
+    asyncio.create_task(run_loop())  # ← Sudah diperbarui
     application.run_polling()
+

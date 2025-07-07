@@ -18,6 +18,7 @@ API_KEY = "841e95162faf457e8d80207a75c3ca2c"
 
 # === KEEP ALIVE ===
 app = Flask('')
+
 @app.route('/')
 def home():
     return "Bot is alive!"
@@ -187,17 +188,23 @@ if __name__ == "__main__":
     keep_alive()
 
     async def main():
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("price", price))
+        application = ApplicationBuilder().token(BOT_TOKEN).build()
+        application.add_handler(CommandHandler("price", price))
 
-    async def send_signal_loop():
-        while True:
-            await send_signal(application)
-            await asyncio.sleep(60)
+        async def send_signal_loop():
+            while True:
+                await send_signal(application)
+                await asyncio.sleep(60)
 
-    await application.initialize()
-    await application.start()
-    asyncio.create_task(send_signal_loop())
-    await application.updater.start_polling()
-    await application.idle()
-    await application.stop()
+        await application.initialize()
+        await application.start()
+
+        # Jalankan send_signal_loop paralel dengan polling
+        task_signal = asyncio.create_task(send_signal_loop())
+        task_polling = asyncio.create_task(application.updater.start_polling())
+
+        await asyncio.wait([task_signal, task_polling], return_when=asyncio.FIRST_COMPLETED)
+
+        await application.stop()
+
+    asyncio.run(main())

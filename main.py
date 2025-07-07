@@ -2,7 +2,8 @@ from flask import Flask
 from threading import Thread
 import requests
 import logging
-from datetime import datetime, timedelta, time, timezone
+from datetime import datetime, timedelta, time
+from zoneinfo import ZoneInfo
 import asyncio
 import pandas as pd
 import ta
@@ -16,15 +17,11 @@ AUTHORIZED_USER_ID = 1305881282
 API_KEY = "841e95162faf457e8d80207a75c3ca2c"
 signals_buffer = []
 
-# Waktu WIB (UTC+7)
-WIB = timezone(timedelta(hours=7))
-
 # === KEEP ALIVE ===
 app = Flask('')
 @app.route('/')
 def home():
     return "Bot is alive!"
-
 def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
 
@@ -36,13 +33,20 @@ def fetch_twelvedata(symbol="XAU/USD", interval="5min", outputsize=100):
         if "values" not in data:
             logging.error("Data tidak tersedia: %s", data.get("message", ""))
             return None
-        candles = [{
-            "datetime": datetime.strptime(d["datetime"], "%Y-%m-%d %H:%M:%S"),
-            "open": float(d["open"]),
-            "high": float(d["high"]),
-            "low": float(d["low"]),
-            "close": float(d["close"])
-        } for d in data["values"]]
+        
+        wib_zone = ZoneInfo("Asia/Jakarta")
+        candles = []
+        for d in data["values"]:
+            # API time dianggap UTC
+            dt_utc = datetime.strptime(d["datetime"], "%Y-%m-%d %H:%M:%S")
+            dt_wib = dt_utc.replace(tzinfo=ZoneInfo("UTC")).astimezone(wib_zone)
+            candles.append({
+                "datetime": dt_wib,
+                "open": float(d["open"]),
+                "high": float(d["high"]),
+                "low": float(d["low"]),
+                "close": float(d["close"])
+            })
         return candles
     except Exception as e:
         logging.error(f"Gagal ambil data dari Twelve Data: {e}")
@@ -128,13 +132,33 @@ def is_weekend(now):
 async def send_signal(context):
     global signals_buffer
     application = context.application
-    now = datetime.now(WIB)
+    wib_zone = ZoneInfo("Asia/Jakarta")
+    now = datetime.now(tz=wib_zone)
 
-    # Jangan kirim sinyal kalau weekend atau Senin sebelum jam 08:00 WIB
+    # Cek kondisi akhir Jumat jam 22:00 WIB
+    if now.weekday() == 4 and now.time() >= time(22, 0):
+        candles = fetch_twelvedata("XAU/USD", "5min", 100)
+        if candles is None:
+            await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data untuk rekap akhir Jumat.")
+            return
+        df = prepare_df(candles).tail(5)
+        tp_total = sum(20 for i in df.itertuples() if i.close > i.open)
+        sl_total = sum(10 for i in df.itertuples() if i.close <= i.open)
+        msg = (
+            f"📊 *Rekap 5 Candle Terakhir Hari Jumat*\n"
+            f"🎯 Total TP: {tp_total} pips\n"
+            f"🛑 Total SL: {sl_total} pips\n"
+            f"🚨 Sinyal terakhir Jumat 22:00 WIB. Market tutup hingga Senin 08:00 WIB.\n"
+            f"Selamat weekend 🌴"
+        )
+        await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
+        return
+
+    # Jangan kirim sinyal saat weekend dan Senin sebelum jam 08:00 WIB
     if is_weekend(now) or (now.weekday() == 0 and now.time() < time(8, 0)):
         return
 
-    # Kirim setiap 45 menit (menit 0, 45, 30, 15 sesuai)
+    # Kirim sinyal setiap 45 menit (menit 0, 45, 30, 15 - setiap 45 menit)
     if now.minute % 45 != 0:
         return
 
@@ -170,36 +194,39 @@ async def send_signal(context):
 
 async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     candles = fetch_twelvedata("XAU/USD", "1min", 1)
-    if candles:
-        last = candles[0]
-        msg = (
-            f"💱 *XAU/USD Price*\n"
-            f"🕒 {last['datetime']}\n"
-            f"🔼 Open: {last['open']:.2f}\n"
-            f"🔽 Close: {last['close']:.2f}\n"
-            f"📈 High: {last['high']:.2f}\n"
-            f"📉 Low: {last['low']:.2f}"
-        )
-        await update.message.reply_text(msg, parse_mode='Markdown')
-    else:
-        await update.message.reply_text("❌ Gagal ambil harga terbaru.")
+    if not candles:
+        await update.message.reply_text("Gagal ambil harga XAU/USD.")
+        return
+    last = candles[0]
+    waktu = last["datetime"].strftime("%Y-%m-%d %H:%M:%S")
+    msg = (
+        f"💱 XAU/USD Price\n"
+        f"🕒 {waktu}\n"
+        f"🔼 Open: {last['open']}\n"
+        f"🔽 Close: {last['close']}\n"
+        f"📈 High: {last['high']}\n"
+        f"📉 Low: {last['low']}"
+    )
+    await update.message.reply_text(msg)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != AUTHORIZED_USER_ID:
-        await update.message.reply_text("❌ Anda tidak diizinkan menjalankan bot ini.")
+    if update.message.from_user.id != AUTHORIZED_USER_ID:
+        await update.message.reply_text("Unauthorized access.")
         return
-    await update.message.reply_text("✅ Bot aktif dan akan mulai mengirim sinyal setiap 45 menit.")
+    await update.message.reply_text("Bot sudah aktif.")
 
-    async def job():
-        while True:
-            await send_signal(context)
-            await asyncio.sleep(60)  # cek setiap 60 detik
-
-    asyncio.create_task(job())
-
-if __name__ == "__main__":
+async def main():
     keep_alive()
     application = ApplicationBuilder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
+
     application.add_handler(CommandHandler("price", cmd_price))
-    application.run_polling()
+    application.add_handler(CommandHandler("start", start))
+
+    job_queue = application.job_queue
+    job_queue.run_repeating(send_signal, interval=60, first=0)
+
+    await application.run_polling()
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())

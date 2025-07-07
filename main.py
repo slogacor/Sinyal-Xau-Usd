@@ -9,7 +9,7 @@ import ta
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# --- KONFIGURASI ---
+# === KONFIGURASI ===
 BOT_TOKEN = "8114552558:AAFpnQEYHYa8P43g5rjOwPs5TSbjtYh9zS4"
 CHAT_ID = "-1002883903673"
 AUTHORIZED_USER_ID = 1305881282
@@ -132,7 +132,10 @@ def format_status(score):
     elif score == 2:
         return "MODERATE ⚠️"
     else:
-        return "LEMAH ⚠️ Harap berhati-hati dan gunakan manajemen risiko"
+        return "LEMAH ⚠️ Harap berhati-hati saat entry dan gunakan manajemen risiko"
+
+def is_weekend(now):
+    return now.weekday() in [5, 6]
 
 # === KIRIM SINYAL ===
 async def send_signal(context):
@@ -140,21 +143,24 @@ async def send_signal(context):
     application = context.application
     now = datetime.now(timezone.utc) + timedelta(hours=7)
 
-    # Kirim rekap setiap hari jam 22:00 WIB
+    # Rekap harian setiap jam 22:00 WIB
     if now.time().hour == 22 and now.time().minute == 0:
-        candles = fetch_twelvedata("XAU/USD", "5min", 5)
+        candles = fetch_twelvedata("XAU/USD", "5min", 10)
         if candles:
-            df = prepare_df(candles)
+            df = prepare_df(candles).tail(5)
             tp_total = sum(20 for i in df.itertuples() if i.close > i.open)
             sl_total = sum(10 for i in df.itertuples() if i.close <= i.open)
-            msg = f"""
-📊 *Rekap 5 Candle Terakhir Hari Ini*
-🎯 Total TP: {tp_total} pips
-🛑 Total SL: {sl_total} pips
-😎 Bot mau healing dulu ke Switzerland 🏔️
-📆 Balik lagi hari Senin jam 08:00 WIB ya!
-"""
+            msg = (
+                f"📊 *Rekap 5 Candle Terakhir Hari Ini*\n"
+                f"🎯 Total TP: {tp_total} pips\n"
+                f"🛑 Total SL: {sl_total} pips\n"
+                f"🧳 Bot mau healing ke Swiss dulu...\n"
+                f"Balik lagi Senin jam 08:00 WIB yaaa! 🤖🇨🇭"
+            )
             await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
+        return
+
+    if is_weekend(now) or (now.weekday() == 0 and now.time() < time(8, 0)):
         return
 
     if now.minute % 45 != 0:
@@ -162,6 +168,7 @@ async def send_signal(context):
 
     candles = fetch_twelvedata("XAU/USD", "5min", 9)
     if candles is None or len(candles) < 9:
+        await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data XAU/USD (kurang dari 9 candle)")
         return
     df = prepare_df(candles)
     df_analyze = df.iloc[0:8]
@@ -182,17 +189,19 @@ async def send_signal(context):
             f"💰 Entry: {entry:.2f} ({entry_note})\n"
             f"🎯 TP1: {tp1:.2f} (+{tp1_pips} pips), TP2: {tp2:.2f} (+{tp2_pips} pips)\n"
             f"🛑 SL: {sl:.2f} (-{sl_pips} pips)\n"
-            f"⏳ *Eksekusi sinyal dilakukan pada candle berikutnya (ke-9)*"
+            f"⏳ *Eksekusi sinyal dilakukan pada candle berikutnya (candle ke-9)*"
         )
         await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
         signals_buffer.append(signal)
+    else:
+        await application.bot.send_message(chat_id=CHAT_ID, text="❌ Tidak ada sinyal valid saat ini.")
 
 # === COMMAND HANDLERS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != AUTHORIZED_USER_ID:
         await update.message.reply_text("❌ Anda tidak diizinkan menjalankan bot ini.")
         return
-    await update.message.reply_text("✅ Bot aktif dan mulai kirim sinyal setiap 45 menit (WIB).")
+    await update.message.reply_text("✅ Bot aktif dan akan mulai mengirim sinyal setiap 45 menit.")
 
     async def job():
         while True:
@@ -204,8 +213,13 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = fetch_twelvedata("XAU/USD", "1min", 1)
     if data:
         price = data[0]["close"]
-        time_now = data[0]["datetime"].strftime('%Y-%m-%d %H:%M:%S')
-        await update.message.reply_text(f"💱 *Harga Realtime XAU/USD*\n🕒 {time_now}\n💰 {price:.2f}", parse_mode="Markdown")
+        utc_time = data[0]["datetime"]
+        if isinstance(utc_time, str):
+            utc_time = datetime.strptime(utc_time, '%Y-%m-%d %H:%M:%S')
+        wib_time = utc_time + timedelta(hours=7)
+        time_now = wib_time.strftime('%Y-%m-%d %H:%M:%S')
+        await update.message.reply_text(
+            f"💱 *Harga Realtime XAU/USD*\n🕒 {time_now}\n💰 {price:.2f}", parse_mode="Markdown")
     else:
         await update.message.reply_text("❌ Gagal mengambil harga XAU/USD saat ini.")
 

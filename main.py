@@ -21,6 +21,7 @@ last_signal_price = None
 job_running = False
 
 app = Flask(__name__)
+
 @app.route('/')
 def home():
     return "Bot is running"
@@ -187,13 +188,15 @@ def ignore_bot_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-job_queue = app.job_queue
+    job_queue = app.job_queue
+    app.add_handler(MessageHandler(filters.ALL, ignore_bot_messages))
 
     jakarta_tz = pytz.timezone("Asia/Jakarta")
-    app.job_queue.run_repeating(send_signal, interval=1800, first=10)
-    app.job_queue.run_daily(send_daily_summary, time=time(hour=21, minute=59, tzinfo=jakarta_tz))
-    app.job_queue.run_daily(monday_greeting, time=time(hour=8, minute=0, tzinfo=jakarta_tz), days=(0,))
-    app.job_queue.run_daily(friday_closing, time=time(hour=22, minute=0, tzinfo=jakarta_tz), days=(4,))
+
+    job_queue.run_repeating(send_signal, interval=1800, first=10)
+    job_queue.run_daily(send_daily_summary, time=time(hour=21, minute=59, tzinfo=jakarta_tz))
+    job_queue.run_daily(monday_greeting, time=time(hour=8, minute=0, tzinfo=jakarta_tz), days=(0,))
+    job_queue.run_daily(friday_closing, time=time(hour=22, minute=0, tzinfo=jakarta_tz), days=(4,))
 
     await app.run_polling()
 

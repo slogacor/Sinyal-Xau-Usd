@@ -73,7 +73,6 @@ def generate_signal(df):
     rsi_now = df["rsi"].iloc[-1]
     ma = df["ma"].iloc[-1]
     ema = df["ema"].iloc[-1]
-    atr = df["atr"].iloc[-1]
     trend = confirm_trend_from_last_3(df)
 
     if not trend:
@@ -178,7 +177,6 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Gagal mengambil harga XAU/USD saat ini.")
 
 # === MAIN ===
-# === MAIN ===
 if __name__ == "__main__":
     keep_alive()
 
@@ -189,17 +187,13 @@ if __name__ == "__main__":
         async def run_loop():
             while True:
                 await send_signal(application)
-                await asyncio.sleep(60)  # setiap 1 menit cek
+                await asyncio.sleep(60)
 
-        asyncio.create_task(run_loop())  # dijalankan dalam loop aktif
+        asyncio.create_task(run_loop())
         await application.run_polling()
 
     try:
-        # Cek apakah event loop sudah aktif (misal: Jupyter, Replit, Uvicorn, dll.)
-        loop = asyncio.get_running_loop()
-        loop.create_task(main())  # kalau sudah jalan, jangan run ulang
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(main())
     except RuntimeError:
-        # Kalau belum ada loop, kita jalanin sendiri
         asyncio.run(main())
-
-

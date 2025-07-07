@@ -19,6 +19,7 @@ API_KEY = "841e95162faf457e8d80207a75c3ca2c"
 
 signals_buffer = []
 last_signal_price = None
+job_running = False  # Flag global untuk cek task sudah berjalan
 
 # === SERVER KEEP ALIVE ===
 app = Flask(__name__)
@@ -85,13 +86,10 @@ def generate_signal(df):
     return signal, score, note, last, snr_res, snr_sup
 
 def calculate_tp_sl(signal, price, score, atr):
-    # Upayakan minimal TP 30 pips dan SL 20 pips (XAU/USD biasanya 2 desimal, jadi sesuaikan)
-    # Satu pip XAU/USD dianggap 0.01 (ini bisa disesuaikan)
     pip_value = 0.01
     min_tp_pips = 30
     min_sl_pips = 20
 
-    # Hitung TP/SL dari ATR dan score
     if signal == "BUY":
         tp1 = max(round(price + (atr * (1 + score / 2)), 2), round(price + min_tp_pips * pip_value, 2))
         tp2 = max(round(price + (atr * (1.5 + score / 2)), 2), round(price + (min_tp_pips + 10) * pip_value, 2))
@@ -116,11 +114,9 @@ async def send_signal(context):
     signal, score, note, last, res, sup = generate_signal(df)
     price = last["close"]
 
-    # Peringatan entry sesuai harga threshold yang ditentukan
     entry_buy_level = 3305
     entry_sell_level = 3300
 
-    # TP/SL dihitung berdasarkan analisa + minimal pips
     tp1, tp2, sl = calculate_tp_sl(signal, price, score, last["atr"])
     time_now = datetime.now(pytz.timezone("Asia/Jakarta")).strftime("%H:%M:%S")
 
@@ -160,7 +156,6 @@ async def send_signal(context):
         await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
         signals_buffer.append({"signal": signal_final, "price": price, "tp1": tp1, "tp2": tp2, "sl": sl})
     else:
-        # Kirim pesan tunggu harga tembus level entry
         await context.bot.send_message(chat_id=CHAT_ID, text=entry_note)
 
 # === REKAP HARIAN ===
@@ -174,7 +169,6 @@ async def rekap_harian(context):
         return
 
     df = prepare_df(candles).tail(60)
-    # Simplified calculation, contoh saja
     tp_total = sum(20 for i in df.itertuples() if i.close > i.open)
     sl_total = sum(10 for i in df.itertuples() if i.close <= i.open)
 
@@ -191,18 +185,25 @@ async def rekap_harian(context):
 
 # === JADWAL & HANDLER ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global job_running
+
     if update.effective_user.id != AUTHORIZED_USER_ID:
         await update.message.reply_text("❌ Anda tidak diizinkan menjalankan bot ini.")
         return
 
+    if job_running:
+        await update.message.reply_text("⚠️ Bot sudah berjalan.")
+        return
+
+    job_running = True
     await update.message.reply_text("✅ Bot aktif. Sinyal akan dikirim setiap 2 jam sekali.")
 
     async def sinyal_job():
         while True:
             await context.bot.send_message(chat_id=CHAT_ID, text="📣 *Ready signal 5 menit lagi!* Bersiap entry.")
-            await asyncio.sleep(5 * 60)  # 5 menit tunggu sebelum sinyal
+            await asyncio.sleep(5 * 60)  # 5 menit
             await send_signal(context)
-            await asyncio.sleep(2 * 60 * 60 - 5 * 60)  # Delay total 2 jam - 5 menit
+            await asyncio.sleep(2 * 60 * 60 - 5 * 60)  # total 2 jam - 5 menit
 
     async def jadwal_rekap():
         while True:

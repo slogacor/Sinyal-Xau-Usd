@@ -2,7 +2,7 @@ from flask import Flask
 from threading import Thread
 import requests
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from zoneinfo import ZoneInfo
 import asyncio
 import pandas as pd
@@ -18,7 +18,6 @@ API_KEY = "841e95162faf457e8d80207a75c3ca2c"
 
 # === KEEP ALIVE ===
 app = Flask('')
-
 @app.route('/')
 def home():
     return "Bot is alive!"
@@ -138,7 +137,7 @@ async def send_signal(application):
         return
 
     # Jangan kirim sinyal di weekend atau sebelum jam 8 pagi Senin
-    if is_weekend(now) or (now.weekday() == 0 and now.time() < timedelta(hours=8)):
+    if is_weekend(now) or (now.weekday() == 0 and now.time() < time(8, 0)):
         return
 
     # Kirim hanya setiap menit ke-0, ke-45 (setiap 45 menit)
@@ -179,32 +178,33 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data:
         price = data[0]["close"]
         time_now = data[0]["datetime"].strftime('%Y-%m-%d %H:%M:%S')  # sudah dalam WIB dari fetch_twelvedata
-        await update.message.reply_text(f"💱 *Harga Realtime XAU/USD*\n🕒 {time_now}\n💰 {price:.2f}", parse_mode="Markdown")
+        await update.message.reply_text(f"💱 *Harga Realtime XAU/USD:* {price}\n⏰ Waktu: {time_now}", parse_mode='Markdown')
     else:
-        await update.message.reply_text("❌ Gagal mengambil harga XAU/USD saat ini.")
+        await update.message.reply_text("❌ Gagal mengambil data harga.")
 
-# === MAIN ===
+# === MAIN ASYNC ===
+async def main():
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    application.add_handler(CommandHandler("price", price))
+
+    await application.initialize()
+    await application.start()
+
+    # task loop kirim sinyal
+    async def send_signal_loop():
+        while True:
+            try:
+                await send_signal(application)
+            except Exception as e:
+                logging.error(f"Error kirim sinyal: {e}")
+            await asyncio.sleep(60)
+
+    task = asyncio.create_task(send_signal_loop())
+
+    await application.updater.start_polling()
+    await application.updater.idle()
+
 if __name__ == "__main__":
     keep_alive()
-
-    async def main():
-        application = ApplicationBuilder().token(BOT_TOKEN).build()
-        application.add_handler(CommandHandler("price", price))
-
-        async def send_signal_loop():
-            while True:
-                await send_signal(application)
-                await asyncio.sleep(60)
-
-        await application.initialize()
-        await application.start()
-
-        # Jalankan send_signal_loop paralel dengan polling
-        task_signal = asyncio.create_task(send_signal_loop())
-        task_polling = asyncio.create_task(application.updater.start_polling())
-
-        await asyncio.wait([task_signal, task_polling], return_when=asyncio.FIRST_COMPLETED)
-
-        await application.stop()
-
     asyncio.run(main())

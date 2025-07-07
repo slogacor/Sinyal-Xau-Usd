@@ -2,7 +2,7 @@ from flask import Flask
 from threading import Thread
 import requests
 import logging
-from datetime import datetime, timedelta, time
+from datetime import datetime, time
 from zoneinfo import ZoneInfo
 import asyncio
 import pandas as pd
@@ -174,37 +174,38 @@ async def send_signal(application):
 
 # === COMMAND ===
 async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logging.info(f"/price command from user: {update.effective_user.id}")
     data = fetch_twelvedata("XAU/USD", "1min", 1)
     if data:
         price = data[0]["close"]
-        time_now = data[0]["datetime"].strftime('%Y-%m-%d %H:%M:%S')  # sudah dalam WIB dari fetch_twelvedata
-        await update.message.reply_text(f"💱 *Harga Realtime XAU/USD:* {price}\n⏰ Waktu: {time_now}", parse_mode='Markdown')
+        time_now = data[0]["datetime"].strftime('%Y-%m-%d %H:%M:%S')
+        await update.message.reply_text(f"💱 *Harga Realtime XAU/USD*\n🕒 {time_now}\n💰 {price:.2f}", parse_mode="Markdown")
     else:
-        await update.message.reply_text("❌ Gagal mengambil data harga.")
+        await update.message.reply_text("❌ Gagal mengambil harga XAU/USD saat ini.")
 
-# === MAIN ASYNC ===
-async def main():
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+# === MAIN ===
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    keep_alive()
 
-    application.add_handler(CommandHandler("price", price))
-
-    await application.initialize()
-    await application.start()
-
-    # task loop kirim sinyal
-    async def send_signal_loop():
+    async def send_signal_loop(application):
         while True:
             try:
                 await send_signal(application)
             except Exception as e:
-                logging.error(f"Error kirim sinyal: {e}")
+                logging.error(f"send_signal error: {e}", exc_info=True)
             await asyncio.sleep(60)
 
-    task = asyncio.create_task(send_signal_loop())
+    async def main():
+        application = ApplicationBuilder().token(BOT_TOKEN).build()
+        application.add_handler(CommandHandler("price", price))
 
-    await application.updater.start_polling()
-    await application.updater.idle()
+        await application.initialize()
+        await application.start()
 
-if __name__ == "__main__":
-    keep_alive()
+        asyncio.create_task(send_signal_loop(application))
+
+        await application.updater.start_polling()
+        await application.updater.idle()
+
     asyncio.run(main())

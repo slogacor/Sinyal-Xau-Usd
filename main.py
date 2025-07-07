@@ -17,9 +17,11 @@ API_KEY = "841e95162faf457e8d80207a75c3ca2c"
 
 # === KEEP ALIVE ===
 app = Flask('')
+
 @app.route('/')
 def home():
     return "Bot is alive!"
+
 def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
 
@@ -73,6 +75,7 @@ def generate_signal(df):
     rsi_now = df["rsi"].iloc[-1]
     ma = df["ma"].iloc[-1]
     ema = df["ema"].iloc[-1]
+    atr = df["atr"].iloc[-1]
     trend = confirm_trend_from_last_3(df)
 
     if not trend:
@@ -177,23 +180,24 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Gagal mengambil harga XAU/USD saat ini.")
 
 # === MAIN ===
-if __name__ == "__main__":
+async def periodic_signal(application):
+    while True:
+        try:
+            await send_signal(application)
+        except Exception as e:
+            logging.error(f"Error saat kirim sinyal: {e}")
+        await asyncio.sleep(60)  # cek setiap 60 detik
+
+async def main():
     keep_alive()
 
-    async def main():
-        application = ApplicationBuilder().token(BOT_TOKEN).build()
-        application.add_handler(CommandHandler("price", price))
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    application.add_handler(CommandHandler("price", price))
 
-        async def run_loop():
-            while True:
-                await send_signal(application)
-                await asyncio.sleep(60)
+    # Task background kirim sinyal
+    asyncio.create_task(periodic_signal(application))
 
-        asyncio.create_task(run_loop())
-        await application.run_polling()
+    await application.run_polling()
 
-    try:
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(main())
-    except RuntimeError:
-        asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

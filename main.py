@@ -2,13 +2,13 @@ from flask import Flask
 from threading import Thread
 import requests
 import logging
-from datetime import datetime, timedelta, time, timezone
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import asyncio
 import pandas as pd
 import ta
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-import nest_asyncio
 
 # --- KONFIGURASI ---
 BOT_TOKEN = "8114552558:AAFpnQEYHYa8P43g5rjOwPs5TSbjtYh9zS4"
@@ -16,14 +16,12 @@ CHAT_ID = "-1002883903673"
 AUTHORIZED_USER_ID = 1305881282
 API_KEY = "841e95162faf457e8d80207a75c3ca2c"
 
-# Patch asyncio agar bisa jalan di event loop yg sudah berjalan
-nest_asyncio.apply()
-
 # === KEEP ALIVE ===
 app = Flask('')
 @app.route('/')
 def home():
     return "Bot is alive!"
+
 def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
 
@@ -37,7 +35,7 @@ def fetch_twelvedata(symbol="XAU/USD", interval="5min", outputsize=100):
             logging.error("Data tidak tersedia: %s", data.get("message", ""))
             return None
         candles = [{
-            "datetime": datetime.strptime(d["datetime"], "%Y-%m-%d %H:%M:%S"),
+            "datetime": datetime.strptime(d["datetime"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=ZoneInfo("UTC")).astimezone(ZoneInfo("Asia/Jakarta")),
             "open": float(d["open"]),
             "high": float(d["high"]),
             "low": float(d["low"]),
@@ -119,9 +117,10 @@ def is_weekend(now):
 
 # === KIRIM SINYAL ===
 async def send_signal(application):
-    now = datetime.now(timezone.utc) + timedelta(hours=7)
+    now = datetime.now(ZoneInfo("Asia/Jakarta"))
 
-    if now.time().hour == 22 and now.time().minute == 0:
+    # Kirim pesan jam 22:00 WIB dengan rekap candle
+    if now.hour == 22 and now.minute == 0:
         candles = fetch_twelvedata("XAU/USD", "5min", 10)
         if candles:
             df = prepare_df(candles).tail(5)
@@ -137,9 +136,11 @@ async def send_signal(application):
             await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
         return
 
-    if is_weekend(now) or (now.weekday() == 0 and now.time() < time(8, 0)):
+    # Jangan kirim sinyal di weekend atau sebelum jam 8 pagi Senin
+    if is_weekend(now) or (now.weekday() == 0 and now.time() < timedelta(hours=8)):
         return
 
+    # Kirim hanya setiap menit ke-0, ke-45 (setiap 45 menit)
     if now.minute % 45 != 0:
         return
 
@@ -176,38 +177,28 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = fetch_twelvedata("XAU/USD", "1min", 1)
     if data:
         price = data[0]["close"]
-        time_now = (data[0]["datetime"] + timedelta(hours=7)).strftime('%Y-%m-%d %H:%M:%S')
+        time_now = data[0]["datetime"].strftime('%Y-%m-%d %H:%M:%S')  # sudah dalam WIB dari fetch_twelvedata
         await update.message.reply_text(f"💱 *Harga Realtime XAU/USD*\n🕒 {time_now}\n💰 {price:.2f}", parse_mode="Markdown")
     else:
         await update.message.reply_text("❌ Gagal mengambil harga XAU/USD saat ini.")
 
 # === MAIN ===
-async def main():
-    keep_alive()
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("price", price))
-
-    async def run_loop():
-        while True:
-            await send_signal(application)
-            await asyncio.sleep(60)
-
-    # Jalankan background task loop pengirim sinyal
-    asyncio.create_task(run_loop())
-
-    # Mulai polling bot Telegram
-    await application.run_polling()
-
 if __name__ == "__main__":
-    # Gunakan loop event yang sudah berjalan, patch dengan nest_asyncio
-    # supaya tidak error "event loop already running"
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            # Jika event loop sudah berjalan (misal di Docker / Jupyter), buat task tanpa asyncio.run
-            loop.create_task(main())
-            loop.run_forever()
-        else:
-            asyncio.run(main())
-    except RuntimeError:
-        asyncio.run(main())
+    keep_alive()
+
+    async def main():
+        application = ApplicationBuilder().token(BOT_TOKEN).build()
+        application.add_handler(CommandHandler("price", price))
+
+        async def run_loop():
+            while True:
+                await send_signal(application)
+                await asyncio.sleep(60)  # cek sinyal tiap 60 detik
+
+        # Jalankan polling dan send_signal loop paralel
+        await asyncio.gather(
+            application.run_polling(),
+            run_loop()
+        )
+
+    asyncio.run(main())

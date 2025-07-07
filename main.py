@@ -33,13 +33,16 @@ def fetch_twelvedata(symbol="XAU/USD", interval="5min", outputsize=100):
         if "values" not in data:
             logging.error("Data tidak tersedia: %s", data.get("message", ""))
             return None
-        candles = [{
-            "datetime": datetime.strptime(d["datetime"], "%Y-%m-%d %H:%M:%S"),
-            "open": float(d["open"]),
-            "high": float(d["high"]),
-            "low": float(d["low"]),
-            "close": float(d["close"])
-        } for d in data["values"]]
+        candles = [
+            {
+                "datetime": datetime.strptime(d["datetime"], "%Y-%m-%d %H:%M:%S"),
+                "open": float(d["open"]),
+                "high": float(d["high"]),
+                "low": float(d["low"]),
+                "close": float(d["close"]),
+            }
+            for d in data["values"]
+        ]
         return candles
     except Exception as e:
         logging.error(f"Gagal ambil data dari Twelve Data: {e}")
@@ -141,21 +144,24 @@ def is_weekend(now):
 async def send_signal(context):
     global signals_buffer
     application = context.application
-    now = datetime.now(timezone.utc) + timedelta(hours=7)
+    now = datetime.now(timezone(timedelta(hours=7)))  # WIB
 
-    # Rekap harian setiap jam 22:00 WIB
-    if now.time().hour == 22 and now.time().minute == 0:
+    if now.time().hour == 22 and now.minute == 0:
         candles = fetch_twelvedata("XAU/USD", "5min", 10)
         if candles:
             df = prepare_df(candles).tail(5)
             tp_total = sum(20 for i in df.itertuples() if i.close > i.open)
             sl_total = sum(10 for i in df.itertuples() if i.close <= i.open)
             msg = (
-                f"📊 *Rekap 5 Candle Terakhir Hari Ini*\n"
-                f"🎯 Total TP: {tp_total} pips\n"
-                f"🛑 Total SL: {sl_total} pips\n"
-                f"🧳 Bot mau healing ke Swiss dulu...\n"
-                f"Balik lagi Senin jam 08:00 WIB yaaa! 🤖🇨🇭"
+                f"📊 *Rekap 5 Candle Terakhir Hari Ini*
+"
+                f"🌟 Total TP: {tp_total} pips
+"
+                f"🛑 Total SL: {sl_total} pips
+"
+                f"🚨 Pasar akan istirahat. Bot healing ke Swiss 🇨🇭.
+"
+                f"🌚 Kembali aktif hari Senin jam 08:00 WIB."
             )
             await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
         return
@@ -170,9 +176,9 @@ async def send_signal(context):
     if candles is None or len(candles) < 9:
         await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data XAU/USD (kurang dari 9 candle)")
         return
+
     df = prepare_df(candles)
     df_analyze = df.iloc[0:8]
-
     result, score, support, resistance = generate_signal(df_analyze)
     if result:
         signal, entry, rsi, atr, ma, ema = result
@@ -182,13 +188,20 @@ async def send_signal(context):
         status_text = format_status(score)
         entry_note = "Entry di bawah harga sinyal" if signal == "BUY" else "Entry di atas harga sinyal"
         msg = (
-            f"🚨 *Sinyal {signal}* {'⬆️' if signal=='BUY' else '⬇️'} _XAU/USD_ @ {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"📊 Status: {status_text}\n"
-            f"⏳ RSI: {rsi:.2f}, ATR: {atr:.2f}\n"
-            f"⚖️ Support: {support:.2f}, Resistance: {resistance:.2f}\n"
-            f"💰 Entry: {entry:.2f} ({entry_note})\n"
-            f"🎯 TP1: {tp1:.2f} (+{tp1_pips} pips), TP2: {tp2:.2f} (+{tp2_pips} pips)\n"
-            f"🛑 SL: {sl:.2f} (-{sl_pips} pips)\n"
+            f"🚨 *Sinyal {signal}* {'⬆️' if signal=='BUY' else '⬇️'} _XAU/USD_ @ {now.strftime('%Y-%m-%d %H:%M:%S')}
+"
+            f"📊 Status: {status_text}
+"
+            f"⏳ RSI: {rsi:.2f}, ATR: {atr:.2f}
+"
+            f"⚖️ Support: {support:.2f}, Resistance: {resistance:.2f}
+"
+            f"💰 Entry: {entry:.2f} ({entry_note})
+"
+            f"🌟 TP1: {tp1:.2f} (+{tp1_pips} pips), TP2: {tp2:.2f} (+{tp2_pips} pips)
+"
+            f"🛑 SL: {sl:.2f} (-{sl_pips} pips)
+"
             f"⏳ *Eksekusi sinyal dilakukan pada candle berikutnya (candle ke-9)*"
         )
         await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
@@ -213,10 +226,9 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = fetch_twelvedata("XAU/USD", "1min", 1)
     if data:
         price = data[0]["close"]
-        utc_time = data[0]["datetime"]
-        if isinstance(utc_time, str):
-            utc_time = datetime.strptime(utc_time, '%Y-%m-%d %H:%M:%S')
-        wib_time = utc_time + timedelta(hours=7)
+        wib_time = data[0]["datetime"]
+        if isinstance(wib_time, str):
+            wib_time = datetime.strptime(wib_time, '%Y-%m-%d %H:%M:%S')
         time_now = wib_time.strftime('%Y-%m-%d %H:%M:%S')
         await update.message.reply_text(
             f"💱 *Harga Realtime XAU/USD*\n🕒 {time_now}\n💰 {price:.2f}", parse_mode="Markdown")

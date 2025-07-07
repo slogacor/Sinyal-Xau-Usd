@@ -2,8 +2,7 @@ from flask import Flask
 from threading import Thread
 import requests
 import logging
-from datetime import datetime, time
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta, time, timezone
 import asyncio
 import pandas as pd
 import ta
@@ -15,17 +14,18 @@ BOT_TOKEN = "8114552558:AAFpnQEYHYa8P43g5rjOwPs5TSbjtYh9zS4"
 CHAT_ID = "-1002883903673"
 AUTHORIZED_USER_ID = 1305881282
 API_KEY = "841e95162faf457e8d80207a75c3ca2c"
+signals_buffer = []
+
+WIB = timezone(timedelta(hours=7))  # WIB timezone UTC+7
 
 # === KEEP ALIVE ===
 app = Flask('')
 @app.route('/')
 def home():
     return "Bot is alive!"
-
 def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
 
-# === FETCH DATA ===
 def fetch_twelvedata(symbol="XAU/USD", interval="5min", outputsize=100):
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize={outputsize}&apikey={API_KEY}"
     try:
@@ -35,7 +35,7 @@ def fetch_twelvedata(symbol="XAU/USD", interval="5min", outputsize=100):
             logging.error("Data tidak tersedia: %s", data.get("message", ""))
             return None
         candles = [{
-            "datetime": datetime.strptime(d["datetime"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=ZoneInfo("UTC")).astimezone(ZoneInfo("Asia/Jakarta")),
+            "datetime": datetime.strptime(d["datetime"], "%Y-%m-%d %H:%M:%S"),
             "open": float(d["open"]),
             "high": float(d["high"]),
             "low": float(d["low"]),
@@ -60,9 +60,9 @@ def confirm_trend_from_last_3(df):
     if len(candles) < 4:
         return None
     c1, c2, c3 = candles.iloc[-4:-1].to_dict('records')
-    up = all(c["close"] > c["open"] for c in [c1, c2, c3])
-    down = all(c["close"] < c["open"] for c in [c1, c2, c3])
-    return "BUY" if up else "SELL" if down else None
+    uptrend = all(c["close"] > c["open"] for c in [c1, c2, c3])
+    downtrend = all(c["close"] < c["open"] for c in [c1, c2, c3])
+    return "BUY" if uptrend else "SELL" if downtrend else None
 
 def generate_signal(df):
     df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
@@ -76,31 +76,39 @@ def generate_signal(df):
     ma = df["ma"].iloc[-1]
     ema = df["ema"].iloc[-1]
     atr = df["atr"].iloc[-1]
-    trend = confirm_trend_from_last_3(df)
 
+    trend = confirm_trend_from_last_3(df)
     if not trend:
-        return ("LEMAH", last_close, rsi_now, atr, ma, ema), 1, support, resistance
+        if atr > 0.2:
+            return ("LEMAH", last_close, rsi_now, atr, ma, ema), 1, support, resistance
+        else:
+            return None, 0, support, resistance
 
     score = 0
-    if atr > 0.2: score += 1
-    if trend == "BUY" and last_close > ma and last_close > ema and rsi_now < 70: score += 2
-    if trend == "SELL" and last_close < ma and last_close < ema and rsi_now > 30: score += 2
+    if atr > 0.2:
+        score += 1
+    if trend == "BUY" and last_close > ma and last_close > ema and rsi_now < 70:
+        score += 2
+    elif trend == "SELL" and last_close < ma and last_close < ema and rsi_now > 30:
+        score += 2
 
-    return (trend, last_close, rsi_now, atr, ma, ema), score, support, resistance
+    if score >= 1:
+        return (trend, last_close, rsi_now, atr, ma, ema), score, support, resistance
+    return None, score, support, resistance
 
 def calculate_tp_sl(signal, entry, score):
     if score >= 3:
-        tp1, tp2, sl = 30, 55, 20
+        tp1_pips, tp2_pips, sl_pips = 30, 55, 20
     elif score == 2:
-        tp1, tp2, sl = 25, 40, 20
+        tp1_pips, tp2_pips, sl_pips = 25, 40, 20
     else:
-        tp1, tp2, sl = 15, 25, 15
-    return (
-        entry + tp1 * 0.1 if signal == "BUY" else entry - tp1 * 0.1,
-        entry + tp2 * 0.1 if signal == "BUY" else entry - tp2 * 0.1,
-        entry - sl * 0.1 if signal == "BUY" else entry + sl * 0.1,
-        tp1, tp2, sl
-    )
+        tp1_pips, tp2_pips, sl_pips = 15, 25, 15
+
+    tp1 = entry + tp1_pips * 0.01 if signal == "BUY" else entry - tp1_pips * 0.01
+    tp2 = entry + tp2_pips * 0.01 if signal == "BUY" else entry - tp2_pips * 0.01
+    sl = entry - sl_pips * 0.01 if signal == "BUY" else entry + sl_pips * 0.01
+
+    return tp1, tp2, sl, tp1_pips, tp2_pips, sl_pips
 
 def adjust_entry(signal, entry, last_close):
     if signal == "BUY" and entry >= last_close:
@@ -110,102 +118,105 @@ def adjust_entry(signal, entry, last_close):
     return round(entry, 2)
 
 def format_status(score):
-    return "GOLDEN MOMENT 🌟" if score >= 3 else "MODERATE ⚠️" if score == 2 else "LEMAH ⚠️ Gunakan manajemen risiko"
+    return "GOLDEN MOMENT 🌟" if score >= 3 else "MODERATE ⚠️" if score == 2 else "LEMAH ⚠️ Harap berhati-hati"
 
 def is_weekend(now):
     return now.weekday() in [5, 6]
 
-# === KIRIM SINYAL ===
-async def send_signal(application):
-    now = datetime.now(ZoneInfo("Asia/Jakarta"))
+async def send_signal(context):
+    global signals_buffer
+    application = context.application
+    now = datetime.now(WIB)
 
-    # Kirim pesan jam 22:00 WIB dengan rekap candle
-    if now.hour == 22 and now.minute == 0:
-        candles = fetch_twelvedata("XAU/USD", "5min", 10)
-        if candles:
-            df = prepare_df(candles).tail(5)
-            tp_total = sum(20 for i in df.itertuples() if i.close > i.open)
-            sl_total = sum(10 for i in df.itertuples() if i.close <= i.open)
-            msg = (
-                f"📊 *Rekap 5 Candle Terakhir Hari Ini*\n"
-                f"🎯 Total TP: {tp_total} pips\n"
-                f"🛑 Total SL: {sl_total} pips\n"
-                f"🤖 Bot mau healing dulu ke Swiss malam ini 🇨🇭\n"
-                f"📆 Balik lagi hari Senin jam 08:00 WIB 💼"
-            )
-            await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
+    # Jika hari Jumat jam 22:00 WIB kirim rekap, market dianggap tutup sampai Senin jam 08:00 WIB
+    if now.weekday() == 4 and now.time() >= time(22, 0):
+        candles = fetch_twelvedata("XAU/USD", "5min", 100)
+        if candles is None:
+            await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data untuk rekap akhir Jumat.")
+            return
+        df = prepare_df(candles).tail(5)
+        tp_total = sum(20 for i in df.itertuples() if i.close > i.open)
+        sl_total = sum(10 for i in df.itertuples() if i.close <= i.open)
+        msg = (
+            f"📊 *Rekap 5 Candle Terakhir Hari Jumat*\n"
+            f"🎯 Total TP: {tp_total} pips\n"
+            f"🛑 Total SL: {sl_total} pips\n"
+            f"🚨 Sinyal terakhir Jumat 22:00 WIB. Market tutup hingga Senin 08:00 WIB.\n"
+            f"Selamat weekend 🌴"
+        )
+        await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
         return
 
-    # Jangan kirim sinyal di weekend atau sebelum jam 8 pagi Senin
+    # Jangan kirim sinyal saat weekend atau Senin sebelum jam 08:00 WIB
     if is_weekend(now) or (now.weekday() == 0 and now.time() < time(8, 0)):
         return
 
-    # Kirim hanya setiap menit ke-0, ke-45 (setiap 45 menit)
+    # Kirim sinyal setiap 45 menit saja (misal: 00, 45 menit)
     if now.minute % 45 != 0:
         return
 
     candles = fetch_twelvedata("XAU/USD", "5min", 9)
-    if not candles or len(candles) < 9:
+    if candles is None or len(candles) < 9:
         await application.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data XAU/USD (kurang dari 9 candle)")
         return
-
     df = prepare_df(candles)
     df_analyze = df.iloc[0:8]
+
     result, score, support, resistance = generate_signal(df_analyze)
     if result:
         signal, entry, rsi, atr, ma, ema = result
         last_close = df_analyze["close"].iloc[-1]
         entry = adjust_entry(signal, entry, last_close)
         tp1, tp2, sl, tp1_pips, tp2_pips, sl_pips = calculate_tp_sl(signal, entry, score)
+        status_text = format_status(score)
         entry_note = "Entry di bawah harga sinyal" if signal == "BUY" else "Entry di atas harga sinyal"
         msg = (
             f"🚨 *Sinyal {signal}* {'⬆️' if signal=='BUY' else '⬇️'} _XAU/USD_ @ {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"📊 Status: {format_status(score)}\n"
+            f"📊 Status: {status_text}\n"
             f"⏳ RSI: {rsi:.2f}, ATR: {atr:.2f}\n"
             f"⚖️ Support: {support:.2f}, Resistance: {resistance:.2f}\n"
             f"💰 Entry: {entry:.2f} ({entry_note})\n"
             f"🎯 TP1: {tp1:.2f} (+{tp1_pips} pips), TP2: {tp2:.2f} (+{tp2_pips} pips)\n"
             f"🛑 SL: {sl:.2f} (-{sl_pips} pips)\n"
-            f"🕒 *Sinyal berlaku untuk candle ke-9 berikutnya*"
+            f"⏳ *Eksekusi sinyal dilakukan pada candle berikutnya (candle ke-9)*"
         )
         await application.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
+        signals_buffer.append(signal)
     else:
         await application.bot.send_message(chat_id=CHAT_ID, text="❌ Tidak ada sinyal valid saat ini.")
 
-# === COMMAND ===
-async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logging.info(f"/price command from user: {update.effective_user.id}")
-    data = fetch_twelvedata("XAU/USD", "1min", 1)
-    if data:
-        price = data[0]["close"]
-        time_now = data[0]["datetime"].strftime('%Y-%m-%d %H:%M:%S')
-        await update.message.reply_text(f"💱 *Harga Realtime XAU/USD*\n🕒 {time_now}\n💰 {price:.2f}", parse_mode="Markdown")
+async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    candles = fetch_twelvedata("XAU/USD", "1min", 1)
+    if candles:
+        last = candles[0]
+        msg = (
+            f"💱 *XAU/USD Price*\n"
+            f"🕒 {last['datetime']}\n"
+            f"🔼 Open: {last['open']:.2f}\n"
+            f"🔽 Close: {last['close']:.2f}\n"
+            f"📈 High: {last['high']:.2f}\n"
+            f"📉 Low: {last['low']:.2f}"
+        )
+        await update.message.reply_text(msg, parse_mode='Markdown')
     else:
-        await update.message.reply_text("❌ Gagal mengambil harga XAU/USD saat ini.")
+        await update.message.reply_text("❌ Gagal ambil harga terbaru.")
 
-# === MAIN ===
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    keep_alive()
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != AUTHORIZED_USER_ID:
+        await update.message.reply_text("❌ Anda tidak diizinkan menjalankan bot ini.")
+        return
+    await update.message.reply_text("✅ Bot aktif dan akan mulai mengirim sinyal setiap 45 menit.")
 
-    async def send_signal_loop(application):
+    async def job():
         while True:
-            try:
-                await send_signal(application)
-            except Exception as e:
-                logging.error(f"send_signal error: {e}", exc_info=True)
+            await send_signal(context)
             await asyncio.sleep(60)
 
-    async def main():
-        application = ApplicationBuilder().token(BOT_TOKEN).build()
-        application.add_handler(CommandHandler("price", price))
+    asyncio.create_task(job())
 
-        await application.initialize()
-        await application.start()
-
-        asyncio.create_task(send_signal_loop(application))
-
-        await application.updater.start_polling()
-        await application.updater.idle()
-
-    asyncio.run(main())
+if __name__ == "__main__":
+    keep_alive()
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("price", cmd_price))
+    application.run_polling()

@@ -190,15 +190,15 @@ if __name__ == "__main__":
         application = ApplicationBuilder().token(BOT_TOKEN).build()
         application.add_handler(CommandHandler("price", price))
 
-        async def run_loop():
+        async def send_signal_loop():
             while True:
                 await send_signal(application)
-                await asyncio.sleep(60)  # cek sinyal tiap 60 detik
+                await asyncio.sleep(60)
 
-        # Jalankan polling dan send_signal loop paralel
-        await asyncio.gather(
-            application.run_polling(),
-            run_loop()
-        )
+        await application.start()
+        asyncio.create_task(send_signal_loop())
+        await application.updater.start_polling()
+        await application.idle()
+        await application.stop()
 
     asyncio.run(main())

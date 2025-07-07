@@ -116,10 +116,7 @@ async def send_signal(context):
     signal, score, note, last, res, sup = generate_signal(df)
     price = last["close"]
 
-    # Peringatan entry sesuai harga threshold yang ditentukan (contoh):
-    # Jika close candle terakhir >= 3305 -> BUY
-    # Jika close candle terakhir <= 3300 -> SELL
-    # Jika harga belum tembus level tersebut, beri info tunggu dulu
+    # Peringatan entry sesuai harga threshold yang ditentukan
     entry_buy_level = 3305
     entry_sell_level = 3300
 
@@ -251,4 +248,11 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === MAIN ===
 if __name__ == "__main__":
     keep_alive()
-    app_bot = ApplicationBuilder
+
+    app_bot = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # Register command handlers
+    app_bot.add_handler(CommandHandler("start", start))
+    app_bot.add_handler(CommandHandler("price", price))
+
+    app_bot.run_polling()

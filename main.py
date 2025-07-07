@@ -178,6 +178,7 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Gagal mengambil harga XAU/USD saat ini.")
 
 # === MAIN ===
+# === MAIN ===
 if __name__ == "__main__":
     keep_alive()
 
@@ -188,11 +189,17 @@ if __name__ == "__main__":
         async def run_loop():
             while True:
                 await send_signal(application)
-                await asyncio.sleep(60)
+                await asyncio.sleep(60)  # setiap 1 menit cek
 
-        asyncio.create_task(run_loop())  # ← Sekarang ini aman karena sudah dalam event loop
+        asyncio.create_task(run_loop())  # dijalankan dalam loop aktif
         await application.run_polling()
 
-    asyncio.run(main())
+    try:
+        # Cek apakah event loop sudah aktif (misal: Jupyter, Replit, Uvicorn, dll.)
+        loop = asyncio.get_running_loop()
+        loop.create_task(main())  # kalau sudah jalan, jangan run ulang
+    except RuntimeError:
+        # Kalau belum ada loop, kita jalanin sendiri
+        asyncio.run(main())
 
 

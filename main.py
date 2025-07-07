@@ -187,7 +187,7 @@ def ignore_bot_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(MessageHandler(filters.ALL, ignore_bot_messages))
+job_queue = app.job_queue
 
     jakarta_tz = pytz.timezone("Asia/Jakarta")
     app.job_queue.run_repeating(send_signal, interval=1800, first=10)

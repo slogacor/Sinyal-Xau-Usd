@@ -187,18 +187,17 @@ if __name__ == "__main__":
     keep_alive()
 
     async def main():
-        application = ApplicationBuilder().token(BOT_TOKEN).build()
-        application.add_handler(CommandHandler("price", price))
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    application.add_handler(CommandHandler("price", price))
 
-        async def send_signal_loop():
-            while True:
-                await send_signal(application)
-                await asyncio.sleep(60)
+    async def send_signal_loop():
+        while True:
+            await send_signal(application)
+            await asyncio.sleep(60)
 
-        await application.start()
-        asyncio.create_task(send_signal_loop())
-        await application.updater.start_polling()
-        await application.idle()
-        await application.stop()
-
-    asyncio.run(main())
+    await application.initialize()
+    await application.start()
+    asyncio.create_task(send_signal_loop())
+    await application.updater.start_polling()
+    await application.idle()
+    await application.stop()

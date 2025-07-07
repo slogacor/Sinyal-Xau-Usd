@@ -2,8 +2,7 @@ from flask import Flask
 from threading import Thread
 import requests
 import logging
-from datetime import datetime, timedelta, time
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta, time, timezone
 import asyncio
 import pandas as pd
 import ta
@@ -17,7 +16,7 @@ AUTHORIZED_USER_ID = 1305881282
 API_KEY = "841e95162faf457e8d80207a75c3ca2c"
 signals_buffer = []
 
-# Zona waktu Jakarta
+# Waktu WIB (UTC+7)
 WIB = timezone(timedelta(hours=7))
 
 # === KEEP ALIVE ===
@@ -25,6 +24,7 @@ app = Flask('')
 @app.route('/')
 def home():
     return "Bot is alive!"
+
 def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
 
@@ -37,7 +37,7 @@ def fetch_twelvedata(symbol="XAU/USD", interval="5min", outputsize=100):
             logging.error("Data tidak tersedia: %s", data.get("message", ""))
             return None
         candles = [{
-            "datetime": datetime.strptime(d["datetime"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=ZoneInfo("UTC")).astimezone(WIB),
+            "datetime": datetime.strptime(d["datetime"], "%Y-%m-%d %H:%M:%S"),
             "open": float(d["open"]),
             "high": float(d["high"]),
             "low": float(d["low"]),
@@ -106,7 +106,6 @@ def calculate_tp_sl(signal, entry, score):
     else:
         tp1_pips, tp2_pips, sl_pips = 15, 25, 15
 
-    # XAU/USD biasanya punya harga 3 digit di belakang koma, jadi pips * 0.01
     tp1 = entry + tp1_pips * 0.01 if signal == "BUY" else entry - tp1_pips * 0.01
     tp2 = entry + tp2_pips * 0.01 if signal == "BUY" else entry - tp2_pips * 0.01
     sl = entry - sl_pips * 0.01 if signal == "BUY" else entry + sl_pips * 0.01
@@ -131,11 +130,11 @@ async def send_signal(context):
     application = context.application
     now = datetime.now(WIB)
 
-    # Jangan kirim sinyal di weekend & Senin sebelum jam 8 pagi WIB
+    # Jangan kirim sinyal kalau weekend atau Senin sebelum jam 08:00 WIB
     if is_weekend(now) or (now.weekday() == 0 and now.time() < time(8, 0)):
         return
 
-    # Kirim sinyal tiap 45 menit saja
+    # Kirim setiap 45 menit (menit 0, 45, 30, 15 sesuai)
     if now.minute % 45 != 0:
         return
 
@@ -155,7 +154,7 @@ async def send_signal(context):
         status_text = format_status(score)
         entry_note = "Entry di bawah harga sinyal" if signal == "BUY" else "Entry di atas harga sinyal"
         msg = (
-            f"🚨 *Sinyal {signal}* {'⬆️' if signal=='BUY' else '⬇️'} _XAU/USD_ @ {now.strftime('%Y-%m-%d %H:%M:%S WIB')}\n"
+            f"🚨 *Sinyal {signal}* {'⬆️' if signal=='BUY' else '⬇️'} _XAU/USD_ @ {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"📊 Status: {status_text}\n"
             f"⏳ RSI: {rsi:.2f}, ATR: {atr:.2f}\n"
             f"⚖️ Support: {support:.2f}, Resistance: {resistance:.2f}\n"
@@ -175,7 +174,7 @@ async def cmd_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last = candles[0]
         msg = (
             f"💱 *XAU/USD Price*\n"
-            f"🕒 {last['datetime'].strftime('%Y-%m-%d %H:%M:%S WIB')}\n"
+            f"🕒 {last['datetime']}\n"
             f"🔼 Open: {last['open']:.2f}\n"
             f"🔽 Close: {last['close']:.2f}\n"
             f"📈 High: {last['high']:.2f}\n"
@@ -194,7 +193,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async def job():
         while True:
             await send_signal(context)
-            await asyncio.sleep(60)
+            await asyncio.sleep(60)  # cek setiap 60 detik
 
     asyncio.create_task(job())
 

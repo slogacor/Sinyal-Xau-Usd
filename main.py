@@ -23,7 +23,6 @@ API_KEY = "841e95162faf457e8d80207a75c3ca2c"
 signals_buffer = []
 last_signal_price = None
 
-# Flask Webserver (agar bot tetap hidup)
 app = Flask(__name__)
 @app.route('/')
 def home():
@@ -32,7 +31,6 @@ def home():
 def keep_alive():
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
 
-# Cek waktu aktif bot
 def is_bot_working_now():
     now = datetime.now(pytz.timezone("Asia/Jakarta"))
     if now.weekday() == 4 and now.time() >= time(22, 0):
@@ -41,16 +39,23 @@ def is_bot_working_now():
         return False
     return now.weekday() < 5
 
-# Ambil data candle
 def fetch_twelvedata(symbol="XAU/USD", interval="5min", count=100):
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&apikey={API_KEY}&outputsize={count}&format=JSON"
     response = requests.get(url)
+
     if response.status_code != 200:
+        print(f"❌ Gagal ambil data: HTTP {response.status_code}")
         return None
-    data = response.json().get("values", [])
+    
+    json_data = response.json()
+
+    if "code" in json_data and json_data["code"] == 429:
+        print(f"❌ Limit API habis: {json_data['message']}")
+        return None
+
+    data = json_data.get("values", [])
     return data[::-1] if data else None
 
-# Siapkan DataFrame
 def prepare_df(data):
     df = pd.DataFrame(data)
     df["datetime"] = pd.to_datetime(df["datetime"])
@@ -58,18 +63,15 @@ def prepare_df(data):
     df = df.astype(float)
     return df
 
-# Resistance dan Support dari 30 candle terakhir
 def find_snr(df):
     highs = df["high"].tail(30)
     lows = df["low"].tail(30)
     return highs.max(), lows.min()
 
-# Konfirmasi trend 3 candle terakhir
 def confirm_trend_from_last_3(df):
     last_3 = df.tail(3)
     return all(last_3["close"] > last_3["open"]) or all(last_3["close"] < last_3["open"])
 
-# Buat sinyal trading
 def generate_signal(df):
     rsi = RSIIndicator(df["close"], window=14).rsi()
     ema = EMAIndicator(df["close"], window=9).ema_indicator()
@@ -117,7 +119,6 @@ def generate_signal(df):
     signal = "BUY" if last["close"] > prev["close"] else "SELL"
     return signal, score, note, last, snr_res, snr_sup
 
-# Hitung TP dan SL berdasarkan ATR
 def calculate_tp_sl(signal, price, score, atr):
     pip = 0.01
     min_tp = 30 * pip
@@ -137,7 +138,6 @@ def calculate_tp_sl(signal, price, score, atr):
 def format_status(score):
     return "🟢 KUAT" if score >= 4 else "🟡 MODERAT" if score >= 2 else "🔴 LEMAH"
 
-# Kirim sinyal setiap 30 menit
 async def send_signal(context):
     if not is_bot_working_now():
         return
@@ -145,6 +145,7 @@ async def send_signal(context):
     now = datetime.now(pytz.timezone("Asia/Jakarta"))
     candles = fetch_twelvedata("XAU/USD")
     if candles is None:
+        print("⚠️ Tidak bisa ambil candle. Mungkin limit API habis?")
         await context.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data XAU/USD.")
         return
 
@@ -170,7 +171,6 @@ async def send_signal(context):
     await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
     signals_buffer.append({"signal": signal, "price": price, "tp1": tp1, "tp2": tp2, "sl": sl})
 
-# Rekap harian
 async def send_daily_summary(context):
     if not is_bot_working_now():
         return
@@ -186,19 +186,12 @@ async def send_daily_summary(context):
     await context.bot.send_message(chat_id=CHAT_ID, text=summary, parse_mode='Markdown')
     signals_buffer.clear()
 
-# Pesan khusus Senin dan Jumat
 async def monday_greeting(context):
     await context.bot.send_message(chat_id=CHAT_ID, text="📈 Selamat hari Senin! Semoga pekan ini penuh cuan 💰")
 
 async def friday_closing(context):
     await context.bot.send_message(chat_id=CHAT_ID, text="📴 Sesi trading minggu ini ditutup. Selamat beristirahat dan sampai jumpa hari Senin! 🌴📉")
 
-# Abaikan pesan dari bot lain
-def ignore_bot_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message and update.message.from_user and update.message.from_user.is_bot:
-        return
-
-# Handler tambahan
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👋 Hai! Bot sinyal XAU/USD aktif dan siap membantu.")
 
@@ -207,18 +200,28 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     await update.message.reply_text("📩 Pesan kamu sudah diterima!")
 
-# Fungsi utama
+async def ignore_bot_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message and update.message.from_user and update.message.from_user.is_bot:
+        return
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    print(f"🚨 Error terjadi: {context.error}")
+    if update and hasattr(update, "message") and update.message:
+        try:
+            await update.message.reply_text("❌ Maaf, terjadi kesalahan pada bot.")
+        except Exception as e:
+            print(f"Gagal kirim pesan error: {e}")
+
 async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     job_queue = app.job_queue
     jakarta_tz = pytz.timezone("Asia/Jakarta")
 
-    # Handler
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_user_message))
     app.add_handler(MessageHandler(filters.ALL, ignore_bot_messages))
+    app.add_error_handler(error_handler)
 
-    # Jadwal pekerjaan
     job_queue.run_repeating(send_signal, interval=1800, first=10)
     job_queue.run_daily(send_daily_summary, time=time(hour=21, minute=59, tzinfo=jakarta_tz))
     job_queue.run_daily(monday_greeting, time=time(hour=8, minute=0, tzinfo=jakarta_tz), days=(0,))
@@ -234,8 +237,6 @@ if __name__ == '__main__':
         nest_asyncio.apply()
     except ImportError:
         pass
-
-    import asyncio
 
     loop = asyncio.get_event_loop()
     loop.create_task(main())

@@ -217,4 +217,13 @@ async def main():
 
 if __name__ == '__main__':
     keep_alive()
-    asyncio.run(main())
+
+    try:
+        import nest_asyncio
+        nest_asyncio.apply()
+    except ImportError:
+        pass
+
+    loop = asyncio.get_event_loop()
+    loop.create_task(main())
+    loop.run_forever()

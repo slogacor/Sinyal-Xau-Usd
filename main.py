@@ -198,6 +198,15 @@ def ignore_bot_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message and update.message.from_user and update.message.from_user.is_bot:
         return
 
+# Handler tambahan
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("👋 Hai! Bot sinyal XAU/USD aktif dan siap membantu.")
+
+async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id != AUTHORIZED_USER_ID:
+        return
+    await update.message.reply_text("📩 Pesan kamu sudah diterima!")
+
 # Fungsi utama
 async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -205,6 +214,8 @@ async def main():
     jakarta_tz = pytz.timezone("Asia/Jakarta")
 
     # Handler
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_user_message))
     app.add_handler(MessageHandler(filters.ALL, ignore_bot_messages))
 
     # Jadwal pekerjaan
@@ -229,4 +240,3 @@ if __name__ == '__main__':
     loop = asyncio.get_event_loop()
     loop.create_task(main())
     loop.run_forever()
-

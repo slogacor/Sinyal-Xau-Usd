@@ -18,7 +18,7 @@ API_KEY = "841e95162faf457e8d80207a75c3ca2c"
 signals_buffer = []
 
 # Zona waktu Jakarta
-WIB = ZoneInfo("Asia/Jakarta")
+WIB = timezone(timedelta(hours=7))
 
 # === KEEP ALIVE ===
 app = Flask('')

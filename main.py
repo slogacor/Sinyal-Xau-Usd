@@ -180,14 +180,19 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === MAIN ===
 if __name__ == "__main__":
     keep_alive()
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("price", price))
 
-    async def run_loop():
-        while True:
-            await send_signal(application)
-            await asyncio.sleep(60)
+    async def main():
+        application = ApplicationBuilder().token(BOT_TOKEN).build()
+        application.add_handler(CommandHandler("price", price))
 
-    asyncio.create_task(run_loop())  # ← Sudah diperbarui
-    application.run_polling()
+        async def run_loop():
+            while True:
+                await send_signal(application)
+                await asyncio.sleep(60)
+
+        asyncio.create_task(run_loop())  # ← Sekarang ini aman karena sudah dalam event loop
+        await application.run_polling()
+
+    asyncio.run(main())
+
 

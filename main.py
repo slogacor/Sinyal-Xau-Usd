@@ -19,7 +19,7 @@ from bs4 import BeautifulSoup
 BOT_TOKEN = "8114552558:AAFpnQEYHYa8P43g5rjOwPs5TSbjtYh9zS4"
 CHAT_ID = "-1002657952587"
 AUTHORIZED_USER_ID = 1305881282
-API_KEY = "94a7d766d73f4db4a7ddf877473711c7"
+API_KEY = "21a0860958e641cc934bec6277415088"
 
 signals_buffer = []
 last_signal_price = None

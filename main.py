@@ -24,11 +24,13 @@ signals_buffer = []
 last_signal_price = None
 
 app = Flask(__name__)
+
 @app.route('/')
 def home():
     return "Bot is running"
 
 def keep_alive():
+    # Jalankan Flask di thread terpisah supaya bot tetap responsive
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
 
 def is_bot_working_now():
@@ -213,28 +215,29 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
             print(f"Gagal kirim pesan error: {e}")
 
 async def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    job_queue = app.job_queue
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    job_queue = application.job_queue
     jakarta_tz = pytz.timezone("Asia/Jakarta")
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_user_message))
-    app.add_handler(MessageHandler(filters.ALL, ignore_bot_messages))
-    app.add_error_handler(error_handler)
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_user_message))
+    application.add_handler(MessageHandler(filters.ALL, ignore_bot_messages))
+    application.add_error_handler(error_handler)
 
+    # Run jobs
     job_queue.run_repeating(send_signal, interval=1800, first=10)
     job_queue.run_daily(send_daily_summary, time=time(hour=21, minute=59, tzinfo=jakarta_tz))
     job_queue.run_daily(monday_greeting, time=time(hour=8, minute=0, tzinfo=jakarta_tz), days=(0,))
     job_queue.run_daily(friday_closing, time=time(hour=22, minute=0, tzinfo=jakarta_tz), days=(4,))
 
-    await app.run_polling()
+    await application.run_polling()
 
 if __name__ == '__main__':
     keep_alive()
 
     try:
         import nest_asyncio
-        nest_asyncio.apply()
+        nest_asyncio.apply()  # untuk environment yang sudah ada event loop
     except ImportError:
         pass
 

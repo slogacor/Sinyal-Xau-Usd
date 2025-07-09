@@ -18,7 +18,7 @@ import pandas as pd
 BOT_TOKEN = "8114552558:AAFpnQEYHYa8P43g5rjOwPs5TSbjtYh9zS4"
 CHAT_ID = "-1002883903673"
 AUTHORIZED_USER_ID = 1305881282
-API_KEY = "841e95162faf457e8d80207a75c3ca2c"
+API_KEY = "94a7d766d73f4db4a7ddf877473711c7"
 
 signals_buffer = []
 last_signal_price = None

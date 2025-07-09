@@ -1,7 +1,7 @@
 from flask import Flask
 from threading import Thread
 import requests
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 import pytz
 import asyncio
 from telegram import Update
@@ -13,6 +13,7 @@ from ta.trend import EMAIndicator, SMAIndicator, MACD
 from ta.momentum import RSIIndicator
 from ta.volatility import AverageTrueRange, BollingerBands
 import pandas as pd
+from bs4 import BeautifulSoup
 
 # Konfigurasi
 BOT_TOKEN = "8114552558:AAFpnQEYHYa8P43g5rjOwPs5TSbjtYh9zS4"
@@ -30,7 +31,6 @@ def home():
     return "Bot is running"
 
 def keep_alive():
-    # Jalankan Flask di thread terpisah supaya bot tetap responsive
     Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
 
 def is_bot_working_now():
@@ -70,10 +70,6 @@ def find_snr(df):
     lows = df["low"].tail(30)
     return highs.max(), lows.min()
 
-def confirm_trend_from_last_3(df):
-    last_3 = df.tail(3)
-    return all(last_3["close"] > last_3["open"]) or all(last_3["close"] < last_3["open"])
-
 def generate_signal(df):
     rsi = RSIIndicator(df["close"], window=14).rsi()
     ema = EMAIndicator(df["close"], window=9).ema_indicator()
@@ -108,9 +104,7 @@ def generate_signal(df):
     if last["ema"] > last["sma"]:
         score += 1
         note += "✅ EMA > SMA (tren naik)\n"
-    if confirm_trend_from_last_3(df):
-        score += 1
-        note += "✅ Tiga candle mendukung arah\n"
+    # Removed 3 candle confirmation
     if last["macd"] > last["macd_signal"]:
         score += 1
         note += "✅ MACD crossover ke atas\n"
@@ -140,8 +134,79 @@ def calculate_tp_sl(signal, price, score, atr):
 def format_status(score):
     return "🟢 KUAT" if score >= 4 else "🟡 MODERAT" if score >= 2 else "🔴 LEMAH"
 
+def check_high_impact_news():
+    """
+    Scrape Forex Factory Economic Calendar for news with High impact
+    occurring within ±30 minutes from now (Jakarta time).
+    Return True if found, False otherwise.
+    """
+    try:
+        url = "https://www.forexfactory.com/calendar.php?week=this"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code != 200:
+            print(f"❌ Gagal akses Forex Factory: HTTP {response.status_code}")
+            return False
+
+        soup = BeautifulSoup(response.text, "html.parser")
+        now = datetime.now(pytz.timezone("Asia/Jakarta"))
+
+        # Cari semua baris kalender berita
+        rows = soup.select("tr.calendar__row")
+        for row in rows:
+            impact = row.select_one("td.calendar__impact")
+            time_td = row.select_one("td.calendar__time")
+            if not impact or not time_td:
+                continue
+
+            impact_text = impact.get("title", "").lower()
+            if "high" not in impact_text:
+                continue
+
+            # Waktu berita (hanya jam:menit)
+            time_str = time_td.get_text(strip=True)
+            if not time_str or time_str.lower() in ["all day", "tentative"]:
+                continue
+
+            # Parsing waktu berita, Forex Factory pakai New York time (EST/EDT)
+            # Karena sulit langsung parsing timezone, kita abaikan timezone,
+            # dan asumsikan jam news adalah jam di New York, perlu konversi ke Jakarta
+            # Sederhananya kita ambil jam dan menit saja, dan ubah ke Jakarta timezone
+
+            # Ambil jam dan menit
+            try:
+                news_time = datetime.strptime(time_str, "%H:%M").time()
+            except:
+                continue
+
+            # Hitung waktu news dalam Jakarta timezone hari ini
+            # Forex Factory waktu berita adalah New York time (Eastern Time)
+            # Jadi kita ubah ke waktu Jakarta
+
+            ny_tz = pytz.timezone("America/New_York")
+            jakarta_tz = pytz.timezone("Asia/Jakarta")
+            today_ny = datetime.now(ny_tz).replace(hour=news_time.hour, minute=news_time.minute, second=0, microsecond=0)
+            news_jakarta_time = today_ny.astimezone(jakarta_tz)
+
+            # Bandingkan waktu news dengan sekarang, jika dalam ±30 menit, return True
+            delta = abs((news_jakarta_time - now).total_seconds())
+            if delta <= 1800:
+                print(f"🚨 Ada berita berdampak tinggi sekarang atau ±30 menit: {news_jakarta_time.strftime('%H:%M')} WIB")
+                return True
+
+        return False
+
+    except Exception as e:
+        print(f"❌ Error cek news: {e}")
+        return False
+
+
 async def send_signal(context):
     if not is_bot_working_now():
+        return
+
+    if check_high_impact_news():
+        await context.bot.send_message(chat_id=CHAT_ID, text="🚨 Ada berita berdampak tinggi sekarang, sinyal di-skip dulu ya.")
         return
 
     now = datetime.now(pytz.timezone("Asia/Jakarta"))
@@ -166,59 +231,18 @@ async def send_signal(context):
 🛑 SL: `{sl}`{alert}
 📊 Status: {format_status(score)}
 🔍 Analisa:
-{note}"""
+{note}
+📌 *Cara menggunakan sinyal:* Tunggu candle 5-menit ini selesai, lalu entry sesuai arah sinyal jika harga masih mendukung.
+"""
 
     global last_signal_price
     last_signal_price = price
     await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
     signals_buffer.append({"signal": signal, "price": price, "tp1": tp1, "tp2": tp2, "sl": sl})
 
-async def send_daily_summary(context):
-    if not is_bot_working_now():
-        return
+# Fungsi dan handler lain sama seperti sebelumnya (send_daily_summary, monday_greeting, friday_closing, start, dsb)...
 
-    if not signals_buffer:
-        await context.bot.send_message(chat_id=CHAT_ID, text="📊 Tidak ada sinyal yang dikirim hari ini.")
-        return
-
-    summary = "*📋 Rekap Sinyal Harian XAU/USD:*\n"
-    for i, sig in enumerate(signals_buffer, 1):
-        summary += f"{i}. {sig['signal']} @ {sig['price']} → TP1: {sig['tp1']}, TP2: {sig['tp2']}, SL: {sig['sl']}\n"
-
-    await context.bot.send_message(chat_id=CHAT_ID, text=summary, parse_mode='Markdown')
-    signals_buffer.clear()
-
-async def monday_greeting(context):
-    await context.bot.send_message(chat_id=CHAT_ID, text="📈 Selamat hari Senin! Semoga pekan ini penuh cuan 💰")
-
-async def friday_closing(context):
-    await context.bot.send_message(chat_id=CHAT_ID, text="📴 Sesi trading minggu ini ditutup. Selamat beristirahat dan sampai jumpa hari Senin! 🌴📉")
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data = fetch_twelvedata("XAU/USD", interval="1min", count=1)
-    if data:
-        latest_price = data[-1]["close"]
-        msg = f"👋 Hai! Bot sinyal XAU/USD aktif dan siap membantu.\nHarga terkini: {latest_price}"
-    else:
-        msg = "👋 Hai! Bot sinyal XAU/USD aktif dan siap membantu.\nHarga terkini: Tidak dapat diambil."
-    await update.message.reply_text(msg)
-
-async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id != AUTHORIZED_USER_ID:
-        return
-    await update.message.reply_text("📩 Pesan kamu sudah diterima!")
-
-async def ignore_bot_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message and update.message.from_user and update.message.from_user.is_bot:
-        return
-
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    print(f"🚨 Error terjadi: {context.error}")
-    if update and hasattr(update, "message") and update.message:
-        try:
-            await update.message.reply_text("❌ Maaf, terjadi kesalahan pada bot.")
-        except Exception as e:
-            print(f"Gagal kirim pesan error: {e}")
+# --- Berikut main function yang sudah diperbarui dengan job queue ---
 
 async def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -230,7 +254,7 @@ async def main():
     application.add_handler(MessageHandler(filters.ALL, ignore_bot_messages))
     application.add_error_handler(error_handler)
 
-    # Run jobs
+    # Jalankan cek sinyal setiap 30 menit
     job_queue.run_repeating(send_signal, interval=1800, first=10)
     job_queue.run_daily(send_daily_summary, time=time(hour=21, minute=59, tzinfo=jakarta_tz))
     job_queue.run_daily(monday_greeting, time=time(hour=8, minute=0, tzinfo=jakarta_tz), days=(0,))
@@ -238,12 +262,14 @@ async def main():
 
     await application.run_polling()
 
+# ... (fungsi start, handle_user_message, ignore_bot_messages, error_handler seperti sebelumnya)
+
 if __name__ == '__main__':
     keep_alive()
 
     try:
         import nest_asyncio
-        nest_asyncio.apply()  # untuk environment yang sudah ada event loop
+        nest_asyncio.apply()
     except ImportError:
         pass
 

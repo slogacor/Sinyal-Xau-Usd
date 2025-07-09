@@ -1,9 +1,8 @@
-Flask==3.0.3
-requests==2.32.3
-pandas==2.2.2
-ta==0.11.0
-python-telegram-bot==20.7
-pytz==2024.1
-python-telegram-bot[job-queue]
+requests
+pandas
+beautifulsoup4
+python-telegram-bot==20.3
+ta
+pytz
 nest_asyncio
-pip install beautifulsoup4
+flask

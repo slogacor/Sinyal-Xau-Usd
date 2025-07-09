@@ -195,7 +195,13 @@ async def friday_closing(context):
     await context.bot.send_message(chat_id=CHAT_ID, text="📴 Sesi trading minggu ini ditutup. Selamat beristirahat dan sampai jumpa hari Senin! 🌴📉")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Hai! Bot sinyal XAU/USD aktif dan siap membantu.")
+    data = fetch_twelvedata("XAU/USD", interval="1min", count=1)
+    if data:
+        latest_price = data[-1]["close"]
+        msg = f"👋 Hai! Bot sinyal XAU/USD aktif dan siap membantu.\nHarga terkini: {latest_price}"
+    else:
+        msg = "👋 Hai! Bot sinyal XAU/USD aktif dan siap membantu.\nHarga terkini: Tidak dapat diambil."
+    await update.message.reply_text(msg)
 
 async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.from_user.id != AUTHORIZED_USER_ID:

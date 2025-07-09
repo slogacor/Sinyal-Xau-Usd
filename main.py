@@ -104,7 +104,7 @@ def generate_signal(df):
     if last["ema"] > last["sma"]:
         score += 1
         note += "✅ EMA > SMA (tren naik)\n"
-    # Removed 3 candle confirmation
+    # Removed 3 candle confirmation as requested
     if last["macd"] > last["macd_signal"]:
         score += 1
         note += "✅ MACD crossover ke atas\n"
@@ -135,11 +135,6 @@ def format_status(score):
     return "🟢 KUAT" if score >= 4 else "🟡 MODERAT" if score >= 2 else "🔴 LEMAH"
 
 def check_high_impact_news():
-    """
-    Scrape Forex Factory Economic Calendar for news with High impact
-    occurring within ±30 minutes from now (Jakarta time).
-    Return True if found, False otherwise.
-    """
     try:
         url = "https://www.forexfactory.com/calendar.php?week=this"
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -151,7 +146,6 @@ def check_high_impact_news():
         soup = BeautifulSoup(response.text, "html.parser")
         now = datetime.now(pytz.timezone("Asia/Jakarta"))
 
-        # Cari semua baris kalender berita
         rows = soup.select("tr.calendar__row")
         for row in rows:
             impact = row.select_one("td.calendar__impact")
@@ -163,32 +157,20 @@ def check_high_impact_news():
             if "high" not in impact_text:
                 continue
 
-            # Waktu berita (hanya jam:menit)
             time_str = time_td.get_text(strip=True)
             if not time_str or time_str.lower() in ["all day", "tentative"]:
                 continue
 
-            # Parsing waktu berita, Forex Factory pakai New York time (EST/EDT)
-            # Karena sulit langsung parsing timezone, kita abaikan timezone,
-            # dan asumsikan jam news adalah jam di New York, perlu konversi ke Jakarta
-            # Sederhananya kita ambil jam dan menit saja, dan ubah ke Jakarta timezone
-
-            # Ambil jam dan menit
             try:
                 news_time = datetime.strptime(time_str, "%H:%M").time()
             except:
                 continue
-
-            # Hitung waktu news dalam Jakarta timezone hari ini
-            # Forex Factory waktu berita adalah New York time (Eastern Time)
-            # Jadi kita ubah ke waktu Jakarta
 
             ny_tz = pytz.timezone("America/New_York")
             jakarta_tz = pytz.timezone("Asia/Jakarta")
             today_ny = datetime.now(ny_tz).replace(hour=news_time.hour, minute=news_time.minute, second=0, microsecond=0)
             news_jakarta_time = today_ny.astimezone(jakarta_tz)
 
-            # Bandingkan waktu news dengan sekarang, jika dalam ±30 menit, return True
             delta = abs((news_jakarta_time - now).total_seconds())
             if delta <= 1800:
                 print(f"🚨 Ada berita berdampak tinggi sekarang atau ±30 menit: {news_jakarta_time.strftime('%H:%M')} WIB")
@@ -199,7 +181,6 @@ def check_high_impact_news():
     except Exception as e:
         print(f"❌ Error cek news: {e}")
         return False
-
 
 async def send_signal(context):
     if not is_bot_working_now():
@@ -240,9 +221,34 @@ async def send_signal(context):
     await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
     signals_buffer.append({"signal": signal, "price": price, "tp1": tp1, "tp2": tp2, "sl": sl})
 
-# Fungsi dan handler lain sama seperti sebelumnya (send_daily_summary, monday_greeting, friday_closing, start, dsb)...
+# Tambahan fungsi dasar handler agar tidak error
 
-# --- Berikut main function yang sudah diperbarui dengan job queue ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Halo! Bot sudah aktif. Gunakan /help untuk info lebih lanjut."
+    )
+
+async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Pesan diterima.")
+
+async def ignore_bot_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pass
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    print(f"Error terjadi: {context.error}")
+
+# Contoh fungsi dummy lainnya, kamu bisa buat sendiri sesuai kebutuhan
+async def send_daily_summary(context):
+    # Implementasi sesuai kebutuhan
+    pass
+
+async def monday_greeting(context):
+    # Implementasi sesuai kebutuhan
+    pass
+
+async def friday_closing(context):
+    # Implementasi sesuai kebutuhan
+    pass
 
 async def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
@@ -254,15 +260,13 @@ async def main():
     application.add_handler(MessageHandler(filters.ALL, ignore_bot_messages))
     application.add_error_handler(error_handler)
 
-    # Jalankan cek sinyal setiap 30 menit
+    # Jalankan cek sinyal setiap 30 menit (1800 detik)
     job_queue.run_repeating(send_signal, interval=1800, first=10)
     job_queue.run_daily(send_daily_summary, time=time(hour=21, minute=59, tzinfo=jakarta_tz))
     job_queue.run_daily(monday_greeting, time=time(hour=8, minute=0, tzinfo=jakarta_tz), days=(0,))
     job_queue.run_daily(friday_closing, time=time(hour=22, minute=0, tzinfo=jakarta_tz), days=(4,))
 
     await application.run_polling()
-
-# ... (fungsi start, handle_user_message, ignore_bot_messages, error_handler seperti sebelumnya)
 
 if __name__ == '__main__':
     keep_alive()

@@ -261,7 +261,7 @@ async def main():
     application.add_error_handler(error_handler)
 
     # Jalankan cek sinyal setiap 30 menit (1800 detik)
-    job_queue.run_repeating(send_signal, interval=1800, first=10)
+    job_queue.run_repeating(send_signal, interval=3600, first=10)
     job_queue.run_daily(send_daily_summary, time=time(hour=21, minute=59, tzinfo=jakarta_tz))
     job_queue.run_daily(monday_greeting, time=time(hour=8, minute=0, tzinfo=jakarta_tz), days=(0,))
     job_queue.run_daily(friday_closing, time=time(hour=22, minute=0, tzinfo=jakarta_tz), days=(4,))

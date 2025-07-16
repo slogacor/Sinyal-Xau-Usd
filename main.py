@@ -21,6 +21,9 @@ CHAT_ID = "-1002883903673"
 AUTHORIZED_USER_ID = 1305881282
 API_KEY = "21a0860958e641cc934bec6277415088"
 
+signals_buffer = []
+last_signal_price = None
+
 app = Flask(__name__)
 
 @app.route('/')
@@ -32,13 +35,17 @@ def keep_alive():
 
 def is_bot_working_now():
     now = datetime.now(pytz.timezone("Asia/Jakarta"))
+    # Jangan kirim sinyal Jumat setelah jam 22:00 dan Senin sebelum jam 08:00
     if now.weekday() == 4 and now.time() >= time(22, 0):
         return False
     if now.weekday() == 0 and now.time() < time(8, 0):
         return False
+    # Sabtu Minggu libur
+    if now.weekday() in [5, 6]:
+        return False
     return now.weekday() < 5
 
-def fetch_twelvedata(symbol="XAU/USD", interval="15min", count=10):
+def fetch_twelvedata(symbol="XAU/USD", interval="15min", count=50):
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&apikey={API_KEY}&outputsize={count}&format=JSON"
     response = requests.get(url)
 
@@ -68,36 +75,35 @@ def find_snr(df):
     return highs.max(), lows.min()
 
 def generate_signal(df):
-    # Analisa 4 candle M15 terakhir sebelum candle berjalan
-    # Jadi ambil candle ke-5 sampai ke-2 dari akhir (index -5 sampai -2)
-    if len(df) < 6:
-        return None, 0, "", None, None, None
-
-    df_analyze = df.iloc[-6:-2].copy()  # 4 candle sebelum candle berjalan
-
-    rsi = RSIIndicator(df_analyze["close"], window=14).rsi()
-    ema = EMAIndicator(df_analyze["close"], window=9).ema_indicator()
-    sma = SMAIndicator(df_analyze["close"], window=50).sma_indicator()
-    atr = AverageTrueRange(df_analyze["high"], df_analyze["low"], df_analyze["close"], window=14).average_true_range()
-    macd_line = MACD(df_analyze["close"]).macd()
-    macd_signal = MACD(df_analyze["close"]).macd_signal()
-    bollinger = BollingerBands(df_analyze["close"])
+    # Hitung indikator pada data lengkap minimal 50 candle
+    rsi = RSIIndicator(df["close"], window=14).rsi()
+    ema = EMAIndicator(df["close"], window=9).ema_indicator()
+    sma = SMAIndicator(df["close"], window=50).sma_indicator()
+    atr = AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
+    macd_line = MACD(df["close"]).macd()
+    macd_signal = MACD(df["close"]).macd_signal()
+    bollinger = BollingerBands(df["close"])
     bb_upper = bollinger.bollinger_hband()
     bb_lower = bollinger.bollinger_lband()
 
-    df_analyze["rsi"] = rsi
-    df_analyze["ema"] = ema
-    df_analyze["sma"] = sma
-    df_analyze["atr"] = atr
-    df_analyze["macd"] = macd_line
-    df_analyze["macd_signal"] = macd_signal
-    df_analyze["bb_upper"] = bb_upper
-    df_analyze["bb_lower"] = bb_lower
-    df_analyze.dropna(inplace=True)
+    df["rsi"] = rsi
+    df["ema"] = ema
+    df["sma"] = sma
+    df["atr"] = atr
+    df["macd"] = macd_line
+    df["macd_signal"] = macd_signal
+    df["bb_upper"] = bb_upper
+    df["bb_lower"] = bb_lower
+
+    df.dropna(inplace=True)
+
+    # Analisa 4 candle terakhir
+    df_analyze = df.tail(4)
 
     last = df_analyze.iloc[-1]
     prev = df_analyze.iloc[-2]
-    snr_res, snr_sup = find_snr(df_analyze)
+
+    snr_res, snr_sup = find_snr(df)
 
     score = 0
     note = ""
@@ -116,7 +122,6 @@ def generate_signal(df):
         note += "✅ Harga breakout dari Bollinger Band\n"
 
     signal = "BUY" if last["close"] > prev["close"] else "SELL"
-
     return signal, score, note, last, snr_res, snr_sup
 
 def calculate_tp_sl(signal, price, score, atr):
@@ -141,8 +146,11 @@ def format_status(score):
 def check_high_impact_news():
     try:
         url = "https://www.forexfactory.com/calendar.php?week=this"
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0 Safari/537.36'}
         response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 403:
+            print("❌ Forex Factory menolak akses (403 Forbidden). Lewati cek berita.")
+            return False
         if response.status_code != 200:
             print(f"❌ Gagal akses Forex Factory: HTTP {response.status_code}")
             return False
@@ -186,73 +194,65 @@ def check_high_impact_news():
         print(f"❌ Error cek news: {e}")
         return False
 
-last_signal_hour = None  # Untuk mencegah duplikat kirim sinyal per jam
-
 async def send_signal(context):
-    global last_signal_hour
-
     if not is_bot_working_now():
+        return
+
+    if check_high_impact_news():
+        await context.bot.send_message(chat_id=CHAT_ID, text="🚨 Ada berita berdampak tinggi sekarang, sinyal di-skip dulu ya.")
         return
 
     now = datetime.now(pytz.timezone("Asia/Jakarta"))
 
-    # Cek apakah sekarang menit 0, 15, 30, 45 (akhir candle M15)
-    if now.minute not in [0, 15, 30, 45]:
+    # Ambil data 50 candle interval 15 menit untuk analisa
+    candles = fetch_twelvedata("XAU/USD", interval="15min", count=50)
+    if candles is None:
+        print("⚠️ Tidak bisa ambil candle. Mungkin limit API habis?")
+        await context.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data XAU/USD.")
         return
 
-    # Kirim sinyal hanya di menit 0 setiap jam (sesuai permintaan)
-    if now.minute == 0:
-        if last_signal_hour == now.hour:
-            # Sudah kirim sinyal di jam ini, skip
-            return
-        last_signal_hour = now.hour
-    else:
-        return  # Skip menit 15,30,45 karena gak kirim sinyal
+    df = prepare_df(candles)
 
-    if check_high_impact_news():
-        await context.bot.send_message(chat_id=CHAT_ID, text="🚨 Ada berita berdampak tinggi, sinyal di-skip dulu ya.")
-        return
-
-    data = fetch_twelvedata()
-    if not data:
-        await context.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data harga.")
-        return
-
-    df = prepare_df(data)
     signal, score, note, last_candle, snr_res, snr_sup = generate_signal(df)
 
-    if not signal:
-        await context.bot.send_message(chat_id=CHAT_ID, text="⚠️ Data tidak cukup untuk analisa sinyal.")
-        return
+    price = last_candle["close"]
+    tp1, tp2, sl = calculate_tp_sl(signal, price, score, last_candle["atr"])
+    time_now = now.strftime("%H:%M:%S")
 
-    tp1, tp2, sl = calculate_tp_sl(signal, last_candle["close"], score, last_candle["atr"] if "atr" in last_candle else 0.5)
-    status = format_status(score)
-    waktu = now.strftime("%Y-%m-%d %H:%M WIB")
+    alert = "\n⚠️ *Hati-hati*, sinyal tidak terlalu kuat.\n" if score < 3 else ""
 
-    message = (
-        f"💰 <b>{signal} XAU/USD</b>\n"
-        f"⌚️ Waktu: {waktu}\n"
-        f"🎯 TP1: {tp1}\n"
-        f"🎯 TP2: {tp2}\n"
-        f"🛑 SL: {sl}\n"
-        f"⚡️ Status: {status}\n"
-        f"📊 Catatan:\n{note}"
-        f"\n\n⚠️ Entry di candle M5 setelah candle M15 selesai."
-    )
+    msg = f"""📡 *Sinyal XAU/USD*
+🕒 Waktu: {time_now} WIB
+📈 Arah: *{signal}*
+💰 Harga entry: `{price}`
+🎯 TP1: `{tp1}` | TP2: `{tp2}`
+🛑 SL: `{sl}`{alert}
+📊 Status: {format_status(score)}
+🔍 Analisa:
+{note}
+📌 *Cara menggunakan sinyal:* Tunggu candle 5-menit ini selesai, lalu entry sesuai arah sinyal jika harga masih mendukung.
+"""
 
-    await context.bot.send_message(chat_id=CHAT_ID, text=message, parse_mode="HTML")
+    global last_signal_price
+    last_signal_price = price
+    await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
+    signals_buffer.append({"signal": signal, "price": price, "tp1": tp1, "tp2": tp2, "sl": sl})
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != AUTHORIZED_USER_ID:
-        await update.message.reply_text("⛔️ Anda tidak berhak menggunakan bot ini.")
+        await update.message.reply_text("🚫 Anda tidak berhak menggunakan bot ini.")
         return
-    await update.message.reply_text("Bot sudah aktif!")
+    await update.message.reply_text("Bot sudah aktif dan berjalan.")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Ketik /start untuk memulai.")
+    await update.message.reply_text("Perintah yang tersedia:\n/start\n/help")
 
-async def unknown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Perintah tidak dikenal.")
+async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = "Bot sinyal XAU/USD\nJadwal kerja bot:\nSenin 08:00 - Jumat 22:00 WIB\nLibur Sabtu & Minggu\nSignal keluar setiap 15 menit berdasarkan candle M15."
+    await update.message.reply_text(msg)
+
+async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Maaf, perintah tidak dikenali.")
 
 def main():
     keep_alive()
@@ -261,10 +261,12 @@ def main():
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(MessageHandler(filters.COMMAND, unknown))
+    application.add_handler(CommandHandler("info", info_command))
+    application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
 
-    # Run job setiap 60 detik cek sinyal
-    application.job_queue.run_repeating(send_signal, interval=60, first=10)
+    job_queue = application.job_queue
+    # Jadwal kirim sinyal tiap 15 menit (menit ke 0, 15, 30, 45)
+    job_queue.run_repeating(send_signal, interval=900, first=0)
 
     print("Bot started...")
     application.run_polling()

@@ -35,7 +35,7 @@ def is_bot_working_now():
     now = datetime.now(pytz.timezone("Asia/Jakarta"))
     weekday = now.weekday()
     jam = now.time()
-    
+
     if weekday == 4 and jam >= time(22, 0):  # Jumat lewat 22:00
         return False
     if weekday in [5, 6]:  # Sabtu dan Minggu
@@ -145,7 +145,7 @@ def check_high_impact_news():
         print(f"❌ Error cek news: {e}")
         return False
 
-async def send_signal(context):
+async def send_signal(context: ContextTypes.DEFAULT_TYPE):
     if not is_bot_working_now():
         print("⏱️ Di luar jam kerja bot.")
         return
@@ -165,10 +165,23 @@ async def send_signal(context):
     price = df["close"].iloc[-1]
     time_now = datetime.now(pytz.timezone("Asia/Jakarta")).strftime("%H:%M:%S")
 
+    # Tambahkan TP & SL (100 / 200 pip = 10 / 20 poin XAU/USD)
+    sl_pips = 10.0
+    tp_pips = 20.0
+
+    if arah == "BUY":
+        sl = round(price - sl_pips, 2)
+        tp = round(price + tp_pips, 2)
+    else:  # SELL
+        sl = round(price + sl_pips, 2)
+        tp = round(price - tp_pips, 2)
+
     msg = f"""📡 *Sinyal XAU/USD*
 🕒 {time_now} WIB
 📈 Arah: *{arah}*
 💰 Harga: `{price}`
+🎯 TP: `{tp}`
+🛑 SL: `{sl}`
 📊 Status: {format_status(score)}
 
 🔍 Analisa:
@@ -195,7 +208,6 @@ async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     keep_alive()
-
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
@@ -205,19 +217,14 @@ def main():
 
     job_queue = application.job_queue
 
-    # Setiap jam penuh (3600 detik)
+    # Kirim sinyal setiap 1 jam penuh
     job_queue.run_repeating(send_signal, interval=3600, first=0)
 
-    # 🚀 Kirim sinyal langsung saat startup
-    async def send_initial_signal():
-        class DummyContext:
-            def __init__(self, bot):
-                self.bot = bot
-        dummy_context = DummyContext(application.bot)
-        await send_signal(dummy_context)
+    # Kirim sinyal paksa saat startup
+    async def startup_signal():
+        await send_signal(context=application.bot)
 
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(send_initial_signal())
+    asyncio.get_event_loop().run_until_complete(startup_signal())
 
     print("🚀 Bot berjalan...")
     application.run_polling()

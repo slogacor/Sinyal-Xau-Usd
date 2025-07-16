@@ -1,5 +1,5 @@
 import asyncio
-asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())  # Fix untuk Python 3.12
+asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())  # Untuk Python 3.12
 
 from flask import Flask
 from threading import Thread
@@ -35,8 +35,8 @@ def is_bot_working_now():
     now = datetime.now(pytz.timezone("Asia/Jakarta"))
     weekday = now.weekday()
     jam = now.time()
-
-    if weekday == 4 and jam >= time(22, 0):  # Jumat lewat 22:00
+    
+    if weekday == 4 and jam >= time(22, 0):  # Jumat setelah 22:00
         return False
     if weekday in [5, 6]:  # Sabtu dan Minggu
         return False
@@ -69,7 +69,7 @@ def prepare_df(data):
 def generate_signal(df):
     if df is None or len(df) < 20:
         print("❌ Data tidak cukup")
-        return None, None, None
+        return None, None, None, None, None
 
     try:
         rsi = RSIIndicator(df["close"], window=14).rsi()
@@ -78,6 +78,7 @@ def generate_signal(df):
         df["rsi"] = rsi
         df["ema"] = ema
         df.dropna(inplace=True)
+
         last = df.iloc[-1]
         prev = df.iloc[-2]
 
@@ -86,19 +87,24 @@ def generate_signal(df):
 
         if last["rsi"] < 30 and last["close"] > last["ema"]:
             score += 1
-            note += "✅ RSI oversold + di atas EMA\n"
+            note += "✅ RSI oversold + harga di atas EMA\n"
         if last["close"] > prev["close"]:
             score += 1
-            note += "✅ Close naik\n"
+            note += "✅ Harga naik dari candle sebelumnya\n"
         if last["close"] > last["ema"]:
             score += 1
             note += "✅ Harga di atas EMA\n"
 
         arah = "BUY" if last["close"] > prev["close"] else "SELL"
-        return arah, score, note
+
+        harga = last["close"]
+        tp = round(harga + 2.0, 2) if arah == "BUY" else round(harga - 2.0, 2)
+        sl = round(harga - 1.0, 2) if arah == "BUY" else round(harga + 1.0, 2)
+
+        return arah, score, note, tp, sl
     except Exception as e:
         print(f"❌ Error generate_signal: {e}")
-        return None, None, None
+        return None, None, None, None, None
 
 def format_status(score):
     if score >= 3:
@@ -156,30 +162,19 @@ async def send_signal(context: ContextTypes.DEFAULT_TYPE):
 
     candles = fetch_data(interval="5min")
     df = prepare_df(candles)
-    arah, score, note = generate_signal(df)
+    arah, score, note, tp, sl = generate_signal(df)
 
     if arah is None:
         await context.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal generate sinyal.")
         return
 
-    price = df["close"].iloc[-1]
+    harga = df["close"].iloc[-1]
     time_now = datetime.now(pytz.timezone("Asia/Jakarta")).strftime("%H:%M:%S")
-
-    # Tambahkan TP & SL (100 / 200 pip = 10 / 20 poin XAU/USD)
-    sl_pips = 10.0
-    tp_pips = 20.0
-
-    if arah == "BUY":
-        sl = round(price - sl_pips, 2)
-        tp = round(price + tp_pips, 2)
-    else:  # SELL
-        sl = round(price + sl_pips, 2)
-        tp = round(price - tp_pips, 2)
 
     msg = f"""📡 *Sinyal XAU/USD*
 🕒 {time_now} WIB
 📈 Arah: *{arah}*
-💰 Harga: `{price}`
+💰 Harga: `{harga}`
 🎯 TP: `{tp}`
 🛑 SL: `{sl}`
 📊 Status: {format_status(score)}
@@ -217,14 +212,14 @@ def main():
 
     job_queue = application.job_queue
 
-    # Kirim sinyal setiap 1 jam penuh
+    # Kirim sinyal setiap 1 jam (3600 detik)
     job_queue.run_repeating(send_signal, interval=3600, first=0)
 
-    # Kirim sinyal paksa saat startup
-    async def startup_signal():
-        await send_signal(context=application.bot)
+    # Kirim sinyal langsung setelah startup
+    async def startup(context: ContextTypes.DEFAULT_TYPE):
+        await send_signal(context)
 
-    asyncio.get_event_loop().run_until_complete(startup_signal())
+    job_queue.run_once(startup, when=0)
 
     print("🚀 Bot berjalan...")
     application.run_polling()

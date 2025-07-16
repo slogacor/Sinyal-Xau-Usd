@@ -47,7 +47,11 @@ def is_bot_working_now():
 
 def fetch_twelvedata(symbol="XAU/USD", interval="15min", count=50):
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&apikey={API_KEY}&outputsize={count}&format=JSON"
-    response = requests.get(url)
+    try:
+        response = requests.get(url, timeout=10)
+    except requests.RequestException as e:
+        print(f"❌ Request error: {e}")
+        return None
 
     if response.status_code != 200:
         print(f"❌ Gagal ambil data: HTTP {response.status_code}")
@@ -55,19 +59,31 @@ def fetch_twelvedata(symbol="XAU/USD", interval="15min", count=50):
     
     json_data = response.json()
 
-    if "code" in json_data and json_data["code"] == 429:
-        print(f"❌ Limit API habis: {json_data['message']}")
-        return None
+    if "code" in json_data:
+        if json_data["code"] == 429:
+            print(f"❌ Limit API habis: {json_data.get('message', '')}")
+            return None
+        else:
+            print(f"❌ Error API: {json_data.get('message', 'Unknown error')}")
+            return None
 
     data = json_data.get("values", [])
-    return data[::-1] if data else None
+    if not data:
+        print("❌ Data kosong dari API.")
+        return None
+
+    return data[::-1]  # balik urutan agar waktu naik
 
 def prepare_df(data):
-    df = pd.DataFrame(data)
-    df["datetime"] = pd.to_datetime(df["datetime"])
-    df.set_index("datetime", inplace=True)
-    df = df.astype(float)
-    return df
+    try:
+        df = pd.DataFrame(data)
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df.set_index("datetime", inplace=True)
+        df = df.astype(float)
+        return df
+    except Exception as e:
+        print(f"❌ Error prepare_df: {e}")
+        return None
 
 def find_snr(df):
     highs = df["high"].tail(30)
@@ -75,54 +91,68 @@ def find_snr(df):
     return highs.max(), lows.min()
 
 def generate_signal(df):
-    # Hitung indikator pada data lengkap minimal 50 candle
-    rsi = RSIIndicator(df["close"], window=14).rsi()
-    ema = EMAIndicator(df["close"], window=9).ema_indicator()
-    sma = SMAIndicator(df["close"], window=50).sma_indicator()
-    atr = AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
-    macd_line = MACD(df["close"]).macd()
-    macd_signal = MACD(df["close"]).macd_signal()
-    bollinger = BollingerBands(df["close"])
-    bb_upper = bollinger.bollinger_hband()
-    bb_lower = bollinger.bollinger_lband()
+    # Pastikan data cukup untuk indikator
+    if df is None or len(df) < 50:
+        print("Data kurang dari 50 baris, tidak bisa generate signal.")
+        return None, None, None, None, None, None
 
-    df["rsi"] = rsi
-    df["ema"] = ema
-    df["sma"] = sma
-    df["atr"] = atr
-    df["macd"] = macd_line
-    df["macd_signal"] = macd_signal
-    df["bb_upper"] = bb_upper
-    df["bb_lower"] = bb_lower
+    try:
+        # Hitung indikator
+        rsi = RSIIndicator(df["close"], window=14).rsi()
+        ema = EMAIndicator(df["close"], window=9).ema_indicator()
+        sma = SMAIndicator(df["close"], window=50).sma_indicator()
+        atr = AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
+        macd_line = MACD(df["close"]).macd()
+        macd_signal = MACD(df["close"]).macd_signal()
+        bollinger = BollingerBands(df["close"])
+        bb_upper = bollinger.bollinger_hband()
+        bb_lower = bollinger.bollinger_lband()
 
-    df.dropna(inplace=True)
+        df["rsi"] = rsi
+        df["ema"] = ema
+        df["sma"] = sma
+        df["atr"] = atr
+        df["macd"] = macd_line
+        df["macd_signal"] = macd_signal
+        df["bb_upper"] = bb_upper
+        df["bb_lower"] = bb_lower
 
-    # Analisa 4 candle terakhir
-    df_analyze = df.tail(4)
+        df.dropna(inplace=True)
 
-    last = df_analyze.iloc[-1]
-    prev = df_analyze.iloc[-2]
+        # Pastikan masih cukup data setelah dropna
+        if len(df) < 4:
+            print("Data kurang setelah dropna, tidak bisa generate signal.")
+            return None, None, None, None, None, None
 
-    snr_res, snr_sup = find_snr(df)
+        df_analyze = df.tail(4)
 
-    score = 0
-    note = ""
+        last = df_analyze.iloc[-1]
+        prev = df_analyze.iloc[-2]
 
-    if last["rsi"] < 30 and last["close"] > last["ema"]:
-        score += 1
-        note += "✅ RSI oversold + harga di atas EMA\n"
-    if last["ema"] > last["sma"]:
-        score += 1
-        note += "✅ EMA > SMA (tren naik)\n"
-    if last["macd"] > last["macd_signal"]:
-        score += 1
-        note += "✅ MACD crossover ke atas\n"
-    if last["close"] > last["bb_upper"] or last["close"] < last["bb_lower"]:
-        score += 1
-        note += "✅ Harga breakout dari Bollinger Band\n"
+        snr_res, snr_sup = find_snr(df)
 
-    signal = "BUY" if last["close"] > prev["close"] else "SELL"
-    return signal, score, note, last, snr_res, snr_sup
+        score = 0
+        note = ""
+
+        if last["rsi"] < 30 and last["close"] > last["ema"]:
+            score += 1
+            note += "✅ RSI oversold + harga di atas EMA\n"
+        if last["ema"] > last["sma"]:
+            score += 1
+            note += "✅ EMA > SMA (tren naik)\n"
+        if last["macd"] > last["macd_signal"]:
+            score += 1
+            note += "✅ MACD crossover ke atas\n"
+        if last["close"] > last["bb_upper"] or last["close"] < last["bb_lower"]:
+            score += 1
+            note += "✅ Harga breakout dari Bollinger Band\n"
+
+        signal = "BUY" if last["close"] > prev["close"] else "SELL"
+        return signal, score, note, last, snr_res, snr_sup
+
+    except Exception as e:
+        print(f"❌ Error generate_signal: {e}")
+        return None, None, None, None, None, None
 
 def calculate_tp_sl(signal, price, score, atr):
     pip = 0.01
@@ -212,8 +242,16 @@ async def send_signal(context):
         return
 
     df = prepare_df(candles)
+    if df is None:
+        await context.bot.send_message(chat_id=CHAT_ID, text="❌ Error saat memproses data candle.")
+        return
 
-    signal, score, note, last_candle, snr_res, snr_sup = generate_signal(df)
+    result = generate_signal(df)
+    if result[0] is None:
+        await context.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal generate sinyal, data kurang atau error.")
+        return
+
+    signal, score, note, last_candle, snr_res, snr_sup = result
 
     price = last_candle["close"]
     tp1, tp2, sl = calculate_tp_sl(signal, price, score, last_candle["atr"])

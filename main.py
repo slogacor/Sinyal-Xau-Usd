@@ -35,19 +35,13 @@ def keep_alive():
 
 def is_bot_working_now():
     now = datetime.now(pytz.timezone("Asia/Jakarta"))
-
-    # Jumat setelah jam 22:00 libur
-    if now.weekday() == 4 and now.time() >= time(22, 0):
+    if now.weekday() in [5, 6]:  # Sabtu, Minggu
         return False
-
-    # Sabtu dan Minggu libur
-    if now.weekday() in [5, 6]:
+    if now.weekday() == 4 and now.time() >= time(22, 0):  # Jumat >= 22:00
         return False
+    return True  # Senin–Kamis full, Jumat sebelum 22:00
 
-    # Senin – Kamis full 24 jam
-    return True
-
-def fetch_twelvedata(symbol="XAU/USD", interval="5min", count=50):
+def fetch_twelvedata(symbol="XAU/USD", interval="5min", count=100):
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&apikey={API_KEY}&outputsize={count}&format=JSON"
     try:
         response = requests.get(url, timeout=10)
@@ -62,19 +56,15 @@ def fetch_twelvedata(symbol="XAU/USD", interval="5min", count=50):
     json_data = response.json()
 
     if "code" in json_data:
-        if json_data["code"] == 429:
-            print(f"❌ Limit API habis: {json_data.get('message', '')}")
-            return None
-        else:
-            print(f"❌ Error API: {json_data.get('message', 'Unknown error')}")
-            return None
+        print(f"❌ API error: {json_data.get('message', '')}")
+        return None
 
     data = json_data.get("values", [])
     if not data:
         print("❌ Data kosong dari API.")
         return None
 
-    return data[::-1]
+    return data[::-1]  # reverse to chronological
 
 def prepare_df(data):
     try:
@@ -94,33 +84,25 @@ def find_snr(df):
 
 def generate_signal(df):
     if df is None or len(df) < 50:
-        print("Data kurang dari 50 baris.")
+        print(f"❌ Data tidak cukup untuk analisa. Dapat: {len(df) if df is not None else 'None'}")
         return None, None, None, None, None, None
 
     try:
-        rsi = RSIIndicator(df["close"], window=14).rsi()
-        ema = EMAIndicator(df["close"], window=9).ema_indicator()
-        sma = SMAIndicator(df["close"], window=50).sma_indicator()
-        atr = AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
-        macd_line = MACD(df["close"]).macd()
-        macd_signal = MACD(df["close"]).macd_signal()
-        bollinger = BollingerBands(df["close"])
-        bb_upper = bollinger.bollinger_hband()
-        bb_lower = bollinger.bollinger_lband()
-
-        df["rsi"] = rsi
-        df["ema"] = ema
-        df["sma"] = sma
-        df["atr"] = atr
-        df["macd"] = macd_line
-        df["macd_signal"] = macd_signal
-        df["bb_upper"] = bb_upper
-        df["bb_lower"] = bb_lower
+        df["rsi"] = RSIIndicator(df["close"], window=14).rsi()
+        df["ema"] = EMAIndicator(df["close"], window=9).ema_indicator()
+        df["sma"] = SMAIndicator(df["close"], window=50).sma_indicator()
+        df["atr"] = AverageTrueRange(df["high"], df["low"], df["close"], window=14).average_true_range()
+        macd = MACD(df["close"])
+        df["macd"] = macd.macd()
+        df["macd_signal"] = macd.macd_signal()
+        bb = BollingerBands(df["close"])
+        df["bb_upper"] = bb.bollinger_hband()
+        df["bb_lower"] = bb.bollinger_lband()
 
         df.dropna(inplace=True)
 
         if len(df) < 4:
-            print("Data kurang setelah dropna.")
+            print("❌ Data terlalu sedikit setelah dropna().")
             return None, None, None, None, None, None
 
         df_analyze = df.tail(4)
@@ -189,12 +171,11 @@ def check_high_impact_news():
             if not impact or not time_td:
                 continue
 
-            impact_text = impact.get("title", "").lower()
-            if "high" not in impact_text:
+            if "high" not in impact.get("title", "").lower():
                 continue
 
             time_str = time_td.get_text(strip=True)
-            if time_str.lower() in ["all day", "tentative"]:
+            if not time_str or time_str.lower() in ["all day", "tentative"]:
                 continue
 
             try:
@@ -209,7 +190,7 @@ def check_high_impact_news():
 
             delta = abs((news_jakarta_time - now).total_seconds())
             if delta <= 1800:
-                print(f"🚨 Ada berita berdampak tinggi: {news_jakarta_time.strftime('%H:%M')} WIB")
+                print(f"🚨 Berita besar sekarang: {news_jakarta_time}")
                 return True
 
         return False
@@ -220,21 +201,21 @@ def check_high_impact_news():
 
 async def send_signal(context):
     if not is_bot_working_now():
+        print("⛔ Diluar jam kerja.")
         return
 
     if check_high_impact_news():
         await context.bot.send_message(chat_id=CHAT_ID, text="🚨 Ada berita berdampak tinggi. Sinyal di-skip.")
         return
 
-    now = datetime.now(pytz.timezone("Asia/Jakarta"))
-    candles = fetch_twelvedata("XAU/USD", interval="5min", count=50)
+    candles = fetch_twelvedata("XAU/USD", interval="5min", count=100)
     if candles is None:
         await context.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data XAU/USD.")
         return
 
     df = prepare_df(candles)
     if df is None:
-        await context.bot.send_message(chat_id=CHAT_ID, text="❌ Error saat proses data candle.")
+        await context.bot.send_message(chat_id=CHAT_ID, text="❌ Error proses data candle.")
         return
 
     result = generate_signal(df)
@@ -243,64 +224,56 @@ async def send_signal(context):
         return
 
     signal, score, note, last_candle, snr_res, snr_sup = result
-
     price = last_candle["close"]
     tp1, tp2, sl = calculate_tp_sl(signal, price, score, last_candle["atr"])
-    time_now = now.strftime("%H:%M:%S")
+    time_now = datetime.now(pytz.timezone("Asia/Jakarta")).strftime("%H:%M")
+
     alert = "\n⚠️ *Hati-hati*, sinyal tidak terlalu kuat.\n" if score < 3 else ""
 
     msg = f"""📡 *Sinyal XAU/USD*
 🕒 Waktu: {time_now} WIB
 📈 Arah: *{signal}*
-💰 Harga entry: `{price}`
+💰 Entry: `{price}`
 🎯 TP1: `{tp1}` | TP2: `{tp2}`
 🛑 SL: `{sl}`{alert}
 📊 Status: {format_status(score)}
 🔍 Analisa:
-{note}
-📌 *Gunakan sinyal setelah candle M5 selesai.*
-"""
+{note}"""
 
-    global last_signal_price
-    last_signal_price = price
     await context.bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='Markdown')
-    signals_buffer.append({"signal": signal, "price": price, "tp1": tp1, "tp2": tp2, "sl": sl})
 
+# Telegram handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != AUTHORIZED_USER_ID:
         await update.message.reply_text("🚫 Anda tidak berhak menggunakan bot ini.")
         return
-    await update.message.reply_text("Bot sudah aktif.")
+    await update.message.reply_text("✅ Bot aktif!")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Perintah yang tersedia:\n/start\n/help\n/info")
+    await update.message.reply_text("Perintah:\n/start\n/help\n/info")
 
 async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = "Bot sinyal XAU/USD\nSenin-Kamis: 24 jam\nJumat: Sampai 22:00 WIB\nSabtu & Minggu libur\nAnalisa candle: M5 (5 menit)"
-    await update.message.reply_text(msg)
+    await update.message.reply_text("Bot sinyal XAU/USD\nJadwal: Senin–Kamis 24 jam, Jumat sampai 22:00 WIB.")
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Maaf, perintah tidak dikenali.")
+    await update.message.reply_text("❓ Perintah tidak dikenali.")
 
 def main():
     keep_alive()
 
     application = ApplicationBuilder().token(BOT_TOKEN).build()
-
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("info", info_command))
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
 
-    job_queue = application.job_queue
+    # Kirim sinyal sekali saat awal deploy
+    asyncio.run(send_signal(application))
 
-    # Kirim sinyal langsung saat pertama kali deploy
-    asyncio.get_event_loop().create_task(send_signal(context=type('obj', (object,), {"bot": application.bot})()))
+    # Kirim sinyal setiap 1 jam (3600 detik)
+    application.job_queue.run_repeating(send_signal, interval=3600, first=0)
 
-    # Kirim sinyal tiap jam tepat di menit 00
-    job_queue.run_repeating(send_signal, interval=3600, first=0)
-
-    print("Bot started...")
+    print("🚀 Bot berjalan...")
     application.run_polling()
 
 if __name__ == "__main__":

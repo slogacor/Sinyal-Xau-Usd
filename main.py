@@ -35,17 +35,19 @@ def keep_alive():
 
 def is_bot_working_now():
     now = datetime.now(pytz.timezone("Asia/Jakarta"))
-    # Jangan kirim sinyal Jumat setelah jam 22:00 dan Senin sebelum jam 08:00
+
+    # Jumat setelah jam 22:00 libur
     if now.weekday() == 4 and now.time() >= time(22, 0):
         return False
-    if now.weekday() == 0 and now.time() < time(8, 0):
-        return False
-    # Sabtu Minggu libur
+
+    # Sabtu dan Minggu libur
     if now.weekday() in [5, 6]:
         return False
-    return now.weekday() < 5
 
-def fetch_twelvedata(symbol="XAU/USD", interval="15min", count=50):
+    # Senin – Kamis full 24 jam
+    return True
+
+def fetch_twelvedata(symbol="XAU/USD", interval="5min", count=50):
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&apikey={API_KEY}&outputsize={count}&format=JSON"
     try:
         response = requests.get(url, timeout=10)
@@ -72,7 +74,7 @@ def fetch_twelvedata(symbol="XAU/USD", interval="15min", count=50):
         print("❌ Data kosong dari API.")
         return None
 
-    return data[::-1]  # balik urutan agar waktu naik
+    return data[::-1]
 
 def prepare_df(data):
     try:
@@ -91,13 +93,11 @@ def find_snr(df):
     return highs.max(), lows.min()
 
 def generate_signal(df):
-    # Pastikan data cukup untuk indikator
     if df is None or len(df) < 50:
-        print("Data kurang dari 50 baris, tidak bisa generate signal.")
+        print("Data kurang dari 50 baris.")
         return None, None, None, None, None, None
 
     try:
-        # Hitung indikator
         rsi = RSIIndicator(df["close"], window=14).rsi()
         ema = EMAIndicator(df["close"], window=9).ema_indicator()
         sma = SMAIndicator(df["close"], window=50).sma_indicator()
@@ -119,13 +119,11 @@ def generate_signal(df):
 
         df.dropna(inplace=True)
 
-        # Pastikan masih cukup data setelah dropna
         if len(df) < 4:
-            print("Data kurang setelah dropna, tidak bisa generate signal.")
+            print("Data kurang setelah dropna.")
             return None, None, None, None, None, None
 
         df_analyze = df.tail(4)
-
         last = df_analyze.iloc[-1]
         prev = df_analyze.iloc[-2]
 
@@ -145,7 +143,7 @@ def generate_signal(df):
             note += "✅ MACD crossover ke atas\n"
         if last["close"] > last["bb_upper"] or last["close"] < last["bb_lower"]:
             score += 1
-            note += "✅ Harga breakout dari Bollinger Band\n"
+            note += "✅ Breakout Bollinger Band\n"
 
         signal = "BUY" if last["close"] > prev["close"] else "SELL"
         return signal, score, note, last, snr_res, snr_sup
@@ -176,13 +174,9 @@ def format_status(score):
 def check_high_impact_news():
     try:
         url = "https://www.forexfactory.com/calendar.php?week=this"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0 Safari/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code == 403:
-            print("❌ Forex Factory menolak akses (403 Forbidden). Lewati cek berita.")
-            return False
         if response.status_code != 200:
-            print(f"❌ Gagal akses Forex Factory: HTTP {response.status_code}")
             return False
 
         soup = BeautifulSoup(response.text, "html.parser")
@@ -200,7 +194,7 @@ def check_high_impact_news():
                 continue
 
             time_str = time_td.get_text(strip=True)
-            if not time_str or time_str.lower() in ["all day", "tentative"]:
+            if time_str.lower() in ["all day", "tentative"]:
                 continue
 
             try:
@@ -215,7 +209,7 @@ def check_high_impact_news():
 
             delta = abs((news_jakarta_time - now).total_seconds())
             if delta <= 1800:
-                print(f"🚨 Ada berita berdampak tinggi sekarang atau ±30 menit: {news_jakarta_time.strftime('%H:%M')} WIB")
+                print(f"🚨 Ada berita berdampak tinggi: {news_jakarta_time.strftime('%H:%M')} WIB")
                 return True
 
         return False
@@ -229,26 +223,23 @@ async def send_signal(context):
         return
 
     if check_high_impact_news():
-        await context.bot.send_message(chat_id=CHAT_ID, text="🚨 Ada berita berdampak tinggi sekarang, sinyal di-skip dulu ya.")
+        await context.bot.send_message(chat_id=CHAT_ID, text="🚨 Ada berita berdampak tinggi. Sinyal di-skip.")
         return
 
     now = datetime.now(pytz.timezone("Asia/Jakarta"))
-
-    # Ambil data 50 candle interval 15 menit untuk analisa
-    candles = fetch_twelvedata("XAU/USD", interval="15min", count=50)
+    candles = fetch_twelvedata("XAU/USD", interval="5min", count=50)
     if candles is None:
-        print("⚠️ Tidak bisa ambil candle. Mungkin limit API habis?")
         await context.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal ambil data XAU/USD.")
         return
 
     df = prepare_df(candles)
     if df is None:
-        await context.bot.send_message(chat_id=CHAT_ID, text="❌ Error saat memproses data candle.")
+        await context.bot.send_message(chat_id=CHAT_ID, text="❌ Error saat proses data candle.")
         return
 
     result = generate_signal(df)
     if result[0] is None:
-        await context.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal generate sinyal, data kurang atau error.")
+        await context.bot.send_message(chat_id=CHAT_ID, text="❌ Gagal generate sinyal.")
         return
 
     signal, score, note, last_candle, snr_res, snr_sup = result
@@ -256,7 +247,6 @@ async def send_signal(context):
     price = last_candle["close"]
     tp1, tp2, sl = calculate_tp_sl(signal, price, score, last_candle["atr"])
     time_now = now.strftime("%H:%M:%S")
-
     alert = "\n⚠️ *Hati-hati*, sinyal tidak terlalu kuat.\n" if score < 3 else ""
 
     msg = f"""📡 *Sinyal XAU/USD*
@@ -268,7 +258,7 @@ async def send_signal(context):
 📊 Status: {format_status(score)}
 🔍 Analisa:
 {note}
-📌 *Cara menggunakan sinyal:* Tunggu candle 5-menit ini selesai, lalu entry sesuai arah sinyal jika harga masih mendukung.
+📌 *Gunakan sinyal setelah candle M5 selesai.*
 """
 
     global last_signal_price
@@ -280,13 +270,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != AUTHORIZED_USER_ID:
         await update.message.reply_text("🚫 Anda tidak berhak menggunakan bot ini.")
         return
-    await update.message.reply_text("Bot sudah aktif dan berjalan.")
+    await update.message.reply_text("Bot sudah aktif.")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Perintah yang tersedia:\n/start\n/help")
+    await update.message.reply_text("Perintah yang tersedia:\n/start\n/help\n/info")
 
 async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = "Bot sinyal XAU/USD\nJadwal kerja bot:\nSenin 08:00 - Jumat 22:00 WIB\nLibur Sabtu & Minggu\nSignal keluar setiap 15 menit berdasarkan candle M15."
+    msg = "Bot sinyal XAU/USD\nSenin-Kamis: 24 jam\nJumat: Sampai 22:00 WIB\nSabtu & Minggu libur\nAnalisa candle: M5 (5 menit)"
     await update.message.reply_text(msg)
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -303,8 +293,12 @@ def main():
     application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
 
     job_queue = application.job_queue
-    # Jadwal kirim sinyal tiap 15 menit (menit ke 0, 15, 30, 45)
-    job_queue.run_repeating(send_signal, interval=900, first=0)
+
+    # Kirim sinyal langsung saat pertama kali deploy
+    asyncio.get_event_loop().create_task(send_signal(context=type('obj', (object,), {"bot": application.bot})()))
+
+    # Kirim sinyal tiap jam tepat di menit 00
+    job_queue.run_repeating(send_signal, interval=3600, first=0)
 
     print("Bot started...")
     application.run_polling()

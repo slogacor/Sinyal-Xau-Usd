@@ -50,7 +50,7 @@ def fetch_data(symbol="XAU/USD", interval="5min", count=50):
             print(f"❌ Gagal ambil data: HTTP {response.status_code}")
             return None
         data = response.json().get("values", [])
-        return data[::-1]  # dari lama ke terbaru
+        return data[::-1]
     except Exception as e:
         print(f"❌ Error fetch_data: {e}")
         return None
@@ -208,9 +208,16 @@ def main():
     # Setiap jam penuh (3600 detik)
     job_queue.run_repeating(send_signal, interval=3600, first=0)
 
-    # 🚀 Kirim sinyal langsung sekali saat startup
+    # 🚀 Kirim sinyal langsung saat startup
+    async def send_initial_signal():
+        class DummyContext:
+            def __init__(self, bot):
+                self.bot = bot
+        dummy_context = DummyContext(application.bot)
+        await send_signal(dummy_context)
+
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(send_signal(context=job_queue))
+    loop.run_until_complete(send_initial_signal())
 
     print("🚀 Bot berjalan...")
     application.run_polling()
